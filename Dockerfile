@@ -37,7 +37,7 @@ WORKDIR /home/appuser
 COPY --from=builder /app/app /home/appuser/app
 
 # do NOT copy .env (we write it at build-time if needed, or provide at runtime)
-# COPY .env .
+ COPY .env .
 
 RUN chown appuser:appgroup /home/appuser/app && chmod +x /home/appuser/app
 
