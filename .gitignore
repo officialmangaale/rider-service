@@ -1,0 +1,99 @@
+# --- Go build artifacts ---
+/bin/
+/build/
+/dist/
+/out/
+/target/
+/coverage/
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+
+# go build/cache
+*.prof
+*.pprof
+*.cpuprofile
+*.memprofile
+
+# If you use GOPATH-style builds
+/pkg/
+/obj/
+
+# Modules
+# Keep go.mod and go.sum committed!
+# Ignore vendor/ unless you actually vendor dependencies.
+vendor/
+
+# Test data/output
+*.cover
+coverage.txt
+.coverage
+profile.cov
+
+# Logs & tmp
+*.log
+logs/
+tmp/
+temp/
+
+# # Env & secrets (commit sample like .env.example instead)
+# .env
+# .env.*
+# !.env.example
+# *.key
+# *.pem
+# *.crt
+.env
+# *.p12
+# *.jks
+
+# Docker
+docker/*.env
+docker-compose.override.yml
+.docker/
+**/.dockerignore.local
+
+# Tools (air, reflex, modd)
+.air.toml
+.air/
+.reflex
+modd.conf
+
+# IDE/editor cruft
+# VS Code
+.vscode/
+!.vscode/extensions.json
+!.vscode/settings.sample.json
+
+# JetBrains (GoLand)
+.idea/
+
+# Vim / Emacs / macOS / Windows
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# Node bits if you have scripts or a small frontend in the repo
+node_modules/
+npm-debug.log*
+yarn.lock
+pnpm-lock.yaml
+
+# Generated code (uncomment if you generate these)
+# gqlgen
+# graph/generated/
+# graph/model/
+
+# Swagger/OpenAPI generated clients/servers (customize to your paths)
+# gen/
+# api/client/
+# api/server/
+
+# Migrations (usually keep SQL committed; ignore compiled artifacts only)
+# migrations/*.lock
