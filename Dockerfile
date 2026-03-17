@@ -1,5 +1,5 @@
 # services/<svc>/Dockerfile
-ARG SERVICE_DIR=services/user-service
+ARG SERVICE_DIR=services/rider-service
 FROM golang:1.24-alpine AS builder
 
 # metadata
@@ -43,9 +43,9 @@ RUN chown appuser:appgroup /home/appuser/app && chmod +x /home/appuser/app
 
 USER appuser
 
-ENV PORT=8081
-EXPOSE 8081
+ENV PORT=8083
+EXPOSE 8083
 
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD ["/home/appuser/app","-health"] || exit 1
+HEALTHCHECK --interval=30s --timeout=3s --start-period=10s --retries=3 CMD ["/home/appuser/app", "-health"]
 
 ENTRYPOINT ["/home/appuser/app"]
