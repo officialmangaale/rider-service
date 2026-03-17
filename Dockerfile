@@ -11,7 +11,8 @@ WORKDIR /src
 # copy go.mod and go.sum for the specific service (so mod download can run and cache)
 # when building with repo root as context, these exist at ${SERVICE_DIR}/go.mod
 ARG SERVICE_DIR
-COPY ${SERVICE_DIR}/go.mod ${SERVICE_DIR}/go.sum ./
+COPY ${SERVICE_DIR}/go.mod ./
+COPY ${SERVICE_DIR}/go.sum* ./
 
 # download dependencies (uses the go.mod from the service)
 RUN apk add --no-cache git && go env -w GOPROXY="https://proxy.golang.org,direct" && go mod download
