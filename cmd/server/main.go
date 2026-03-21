@@ -18,7 +18,7 @@ import (
 
 func main() {
 	// Load .env if present (dev mode)
-	_ = godotenv.Load()
+	_ = godotenv.Load("../../.env")
 
 	cfg, err := config.Load()
 	if err != nil {
