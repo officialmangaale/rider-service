@@ -1,7 +1,9 @@
 package handler
 
 import (
+	"encoding/json"
 	"net/http"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -28,7 +30,61 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 		dto.NotFound(c, "Rider profile not found")
 		return
 	}
-	dto.Success(c, http.StatusOK, "profile fetched", rider)
+
+	phone := ""
+	if rider.Phone != nil {
+		phone = *rider.Phone
+	}
+
+	firstName := ""
+	if rider.FirstName != nil {
+		firstName = *rider.FirstName
+	}
+
+	lastName := ""
+	if rider.LastName != nil {
+		lastName = *rider.LastName
+	}
+
+	vehicleType := ""
+	if rider.VehicleType != nil {
+		vehicleType = *rider.VehicleType
+	}
+
+	registrationNo := ""
+	if rider.VehicleRegistrationNumber != nil {
+		registrationNo = *rider.VehicleRegistrationNumber
+	}
+
+	status := "offline"
+	if rider.IsAvailable {
+		status = "online"
+	}
+
+	avgRating := 0.0
+	if rider.RatingAvg != nil {
+		avgRating = *rider.RatingAvg
+	}
+
+	resp := dto.RiderProfileResponse{
+		User: dto.UserProfile{
+			FirstName: firstName,
+			LastName:  lastName,
+			Phone:     phone,
+			City:      "Pune", // Mocked statically for now
+		},
+		Rider: dto.RiderStats{
+			AvgRating:          avgRating,
+			AvailabilityStatus: status,
+			ActiveHoursToday:   4.5, // Mocked dynamically
+		},
+		Vehicle: dto.VehicleProfile{
+			VehicleType:    vehicleType,
+			RegistrationNo: registrationNo,
+		},
+	}
+
+	dto.Success(c, http.StatusOK, "profile fetched", resp)
 }
 
 // UpdateProfile updates basic profile fields.
@@ -57,7 +113,22 @@ func (h *RiderHandler) UpdateVehicle(c *gin.Context) {
 		return
 	}
 
-	rider, err := h.riderSvc.UpdateVehicle(c.Request.Context(), userID, req.VehicleType, req.VehicleRegistrationNumber, req.VehicleDetails, req.InsuranceDetails, req.MaxCarryCapacityKg, req.LicenseNumber, req.LicenseExpiry)
+	vehicleDetailsMap := map[string]interface{}{
+		"make":            req.Make,
+		"model":           req.Model,
+		"year":            req.Year,
+		"rc_document_url": req.RCDocumentURL,
+	}
+	vehicleDetailsBytes, _ := json.Marshal(vehicleDetailsMap)
+	vehicleDetailsStr := string(vehicleDetailsBytes)
+
+	insuranceDetailsMap := map[string]interface{}{
+		"insurance_document_url": req.InsuranceDocumentURL,
+	}
+	insuranceBytes, _ := json.Marshal(insuranceDetailsMap)
+	insuranceStr := string(insuranceBytes)
+
+	rider, err := h.riderSvc.UpdateVehicle(c.Request.Context(), userID, &req.VehicleType, &req.RegistrationNumber, &vehicleDetailsStr, &insuranceStr, nil, nil, nil)
 	if err != nil {
 		dto.InternalError(c, "Failed to update vehicle")
 		return
@@ -74,7 +145,10 @@ func (h *RiderHandler) UpdateBankDetails(c *gin.Context) {
 		return
 	}
 
-	rider, err := h.riderSvc.UpdateBankDetails(c.Request.Context(), userID, req.BankDetails, req.PayoutMethods)
+	bankDetailsBytes, _ := json.Marshal(req)
+	bankDetailsStr := string(bankDetailsBytes)
+
+	rider, err := h.riderSvc.UpdateBankDetails(c.Request.Context(), userID, &bankDetailsStr, nil)
 	if err != nil {
 		dto.InternalError(c, "Failed to update bank details")
 		return
@@ -91,7 +165,23 @@ func (h *RiderHandler) UpdateKYC(c *gin.Context) {
 		return
 	}
 
-	rider, err := h.riderSvc.UpdateKYC(c.Request.Context(), userID, req.KYCData, req.VerificationDocs)
+	kycDataMap := map[string]interface{}{
+		"national_id_type":   req.NationalIDType,
+		"national_id_number": req.NationalIDNumber,
+	}
+	kycDataBytes, _ := json.Marshal(kycDataMap)
+	kycDataStr := string(kycDataBytes)
+
+	verificationDocsMap := map[string]interface{}{
+		"driving_license_front_url": req.DrivingLicenseFrontURL,
+		"driving_license_back_url":  req.DrivingLicenseBackURL,
+		"national_id_front_url":     req.NationalIDFrontURL,
+		"national_id_back_url":      req.NationalIDBackURL,
+	}
+	docsBytes, _ := json.Marshal(verificationDocsMap)
+	docsStr := string(docsBytes)
+
+	rider, err := h.riderSvc.UpdateKYC(c.Request.Context(), userID, &req.DrivingLicenseNumber, &kycDataStr, &docsStr)
 	if err != nil {
 		dto.InternalError(c, "Failed to update KYC")
 		return
@@ -128,7 +218,7 @@ func (h *RiderHandler) GoOnline(c *gin.Context) {
 		dto.InternalError(c, "Failed to go online")
 		return
 	}
-	dto.Success(c, http.StatusOK, "you are now online", nil)
+	dto.Success(c, http.StatusOK, "Shift updated", nil)
 }
 
 // GoOffline sets rider as unavailable.
@@ -138,19 +228,30 @@ func (h *RiderHandler) GoOffline(c *gin.Context) {
 		dto.InternalError(c, "Failed to go offline")
 		return
 	}
-	dto.Success(c, http.StatusOK, "you are now offline", nil)
+	dto.Success(c, http.StatusOK, "Shift updated", nil)
 }
 
 // GetAvailability returns current availability.
 func (h *RiderHandler) GetAvailability(c *gin.Context) {
 	userID := middleware.GetUserID(c)
-	available, onTrip, err := h.riderSvc.GetAvailability(c.Request.Context(), userID)
+	available, _, err := h.riderSvc.GetAvailability(c.Request.Context(), userID)
 	if err != nil {
 		dto.InternalError(c, "Failed to get availability")
 		return
 	}
-	dto.Success(c, http.StatusOK, "availability", gin.H{
-		"is_available": available,
-		"on_trip":      onTrip,
-	})
+
+	var activeShift *dto.ActiveShift
+	if available {
+		// Mock shift start time to today at 8:00 AM
+		now := time.Now()
+		startOfDay := time.Date(now.Year(), now.Month(), now.Day(), 8, 0, 0, 0, now.Location())
+		activeShift = &dto.ActiveShift{StartedAt: startOfDay}
+	}
+
+	resp := dto.RiderAvailabilityResponse{
+		IsAvailable: available,
+		ActiveShift: activeShift,
+	}
+
+	dto.Success(c, http.StatusOK, "availability", resp)
 }

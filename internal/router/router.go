@@ -34,6 +34,7 @@ func Setup(db *sql.DB, jwtSecret string) *gin.Engine {
 
 	// -- Handlers --
 	healthH := handler.NewHealthHandler(db)
+	uploadH := handler.NewUploadHandler()
 	riderH := handler.NewRiderHandler(riderSvc)
 	orderH := handler.NewOrderHandler(orderSvc)
 	locationH := handler.NewLocationHandler(locationSvc)
@@ -42,6 +43,9 @@ func Setup(db *sql.DB, jwtSecret string) *gin.Engine {
 
 	// ==================== PUBLIC ROUTES ====================
 	r.GET("/health", healthH.Health)
+	
+	apiV1Public := r.Group("/api/v1")
+	apiV1Public.POST("/upload", uploadH.HandleUpload)
 
 	// ==================== PROTECTED ROUTES ====================
 	auth := r.Group("/api/v1")
@@ -77,8 +81,8 @@ func Setup(db *sql.DB, jwtSecret string) *gin.Engine {
 	// --- Delivery Lifecycle ---
 	delivery := auth.Group("/delivery")
 	{
-		delivery.POST("/:id/arrived-at-restaurant", orderH.ArrivedAtRestaurant)
 		delivery.POST("/:id/picked-up", orderH.PickedUp)
+		delivery.POST("/:id/arrived-at-restaurant", orderH.ArrivedAtRestaurant)
 		delivery.POST("/:id/arrived-at-customer", orderH.ArrivedAtCustomer)
 		delivery.POST("/:id/delivered", orderH.Delivered)
 		delivery.POST("/:id/cancel", orderH.CancelDelivery)

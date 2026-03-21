@@ -29,11 +29,12 @@ func (h *LocationHandler) UpdateLocation(c *gin.Context) {
 		return
 	}
 
-	if err := h.locationSvc.UpdateLocation(c.Request.Context(), userID, req.Latitude, req.Longitude, req.Heading, req.Speed); err != nil {
+	resp, err := h.locationSvc.UpdateLocation(c.Request.Context(), userID, req.Latitude, req.Longitude, req.Heading, req.Speed)
+	if err != nil {
 		dto.InternalError(c, "Failed to update location")
 		return
 	}
-	dto.Success(c, http.StatusOK, "location updated", nil)
+	dto.Success(c, http.StatusOK, "Location updated successfully", resp)
 }
 
 // GetCurrentLocation returns the current position.

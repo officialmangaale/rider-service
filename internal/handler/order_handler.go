@@ -40,10 +40,26 @@ func (h *OrderHandler) GetActiveOrder(c *gin.Context) {
 	userID := middleware.GetUserID(c)
 	order, err := h.orderSvc.GetActiveOrder(c.Request.Context(), userID)
 	if err != nil {
-		dto.Success(c, http.StatusOK, "no active order", nil)
+		// App expects empty/404 if no active order. We return 200 with nil data or 404 per user preference.
+		// "Return 404 if no active order"
+		dto.NotFound(c, "no active order")
 		return
 	}
-	dto.Success(c, http.StatusOK, "active order", order)
+
+	resp := dto.OrderResponse{
+		ID:              strconv.Itoa(order.OrderID),
+		AssignmentID:    "asn_789xyz",                  // Mocked
+		RestaurantName:  "Pizza Paradise",              // Mocked
+		CustomerName:    "John Doe",                    // Mocked
+		PickupAddress:   "123 Main St, Central Plaza",  // Mocked
+		DeliveryAddress: "456 Oak Avenue, Apt 4B",      // Mocked
+		Status:          order.OrderStatus,
+		PaymentMethod:   "PREPAID",
+		CustomerPhone:   "+919876543210",               // Mocked
+		DistanceKm:      4.5,                           // Mocked
+	}
+
+	dto.Success(c, http.StatusOK, "active order", resp)
 }
 
 // GetIncomingAssignment returns the current pending assignment offer.
@@ -51,13 +67,33 @@ func (h *OrderHandler) GetIncomingAssignment(c *gin.Context) {
 	userID := middleware.GetUserID(c)
 	assignment, order, err := h.orderSvc.GetIncomingAssignment(c.Request.Context(), userID)
 	if err != nil {
-		dto.Success(c, http.StatusOK, "no incoming assignment", nil)
+		// Return 404 or empty data if no assignment
+		dto.NotFound(c, "no incoming assignment")
 		return
 	}
-	dto.Success(c, http.StatusOK, "incoming assignment", gin.H{
-		"assignment": assignment,
-		"order":      order,
-	})
+
+	resp := dto.LiveOrderResponse{
+		Assignment: &dto.AssignmentResponse{
+			ID:                 assignment.ID,
+			DecisionDeadlineAt: assignment.ExpiresAt,
+		},
+		Order: &dto.OrderResponse{
+			ID:              strconv.Itoa(order.OrderID),
+			RestaurantName:  "Pizza Paradise",             // Mocked
+			CustomerName:    "John Doe",                   // Mocked
+			PickupAddress:   "123 Main St, Central Plaza", // Mocked
+			DeliveryAddress: "456 Oak Avenue, Apt 4B",     // Mocked
+			DistanceKm:      4.5,                          // Mocked
+			BasePayout:      40.0,                         // Mocked
+			DistancePayout:  15.0,                         // Mocked
+			WaitingCharges:  0.0,                          // Mocked
+			SurgeBonus:      20.0,                         // Mocked
+			TipAmount:       order.TipAmount,
+			ItemsCount:      3,                            // Mocked
+		},
+	}
+
+	dto.Success(c, http.StatusOK, "incoming assignment", resp)
 }
 
 // AcceptAssignment accepts a delivery assignment.
@@ -69,12 +105,12 @@ func (h *OrderHandler) AcceptAssignment(c *gin.Context) {
 		return
 	}
 
-	order, err := h.orderSvc.AcceptAssignment(c.Request.Context(), assignmentID, userID)
+	_, err := h.orderSvc.AcceptAssignment(c.Request.Context(), assignmentID, userID)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "assignment accepted", order)
+	dto.Success(c, http.StatusOK, "Assignment accepted successfully", nil)
 }
 
 // RejectAssignment rejects a delivery assignment.
@@ -88,7 +124,7 @@ func (h *OrderHandler) RejectAssignment(c *gin.Context) {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "assignment rejected", nil)
+	dto.Success(c, http.StatusOK, "Assignment rejected successfully", nil)
 }
 
 // GetOrderDetail returns a specific order.
@@ -132,12 +168,12 @@ func (h *OrderHandler) PickedUp(c *gin.Context) {
 		return
 	}
 
-	order, err := h.orderSvc.PickedUp(c.Request.Context(), orderID, userID)
+	_, err = h.orderSvc.PickedUp(c.Request.Context(), orderID, userID)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "order picked up", order)
+	dto.Success(c, http.StatusOK, "Order status updated successfully", nil)
 }
 
 // ArrivedAtRestaurant records that rider reached the restaurant.
@@ -149,12 +185,12 @@ func (h *OrderHandler) ArrivedAtRestaurant(c *gin.Context) {
 		return
 	}
 
-	order, err := h.orderSvc.ArrivedAtRestaurant(c.Request.Context(), orderID, userID)
+	_, err = h.orderSvc.ArrivedAtRestaurant(c.Request.Context(), orderID, userID)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "arrived at restaurant", order)
+	dto.Success(c, http.StatusOK, "Order status updated successfully", nil)
 }
 
 // ArrivedAtCustomer records that rider reached the customer location.
@@ -166,12 +202,12 @@ func (h *OrderHandler) ArrivedAtCustomer(c *gin.Context) {
 		return
 	}
 
-	order, err := h.orderSvc.ArrivedAtCustomer(c.Request.Context(), orderID, userID)
+	_, err = h.orderSvc.ArrivedAtCustomer(c.Request.Context(), orderID, userID)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "arrived at customer", order)
+	dto.Success(c, http.StatusOK, "Order status updated successfully", nil)
 }
 
 // Delivered marks order as delivered.
@@ -183,12 +219,12 @@ func (h *OrderHandler) Delivered(c *gin.Context) {
 		return
 	}
 
-	order, err := h.orderSvc.Delivered(c.Request.Context(), orderID, userID)
+	_, err = h.orderSvc.Delivered(c.Request.Context(), orderID, userID)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "order delivered", order)
+	dto.Success(c, http.StatusOK, "Order status updated successfully", nil)
 }
 
 // CancelDelivery cancels the delivery.
@@ -206,12 +242,12 @@ func (h *OrderHandler) CancelDelivery(c *gin.Context) {
 		return
 	}
 
-	order, err := h.orderSvc.CancelDelivery(c.Request.Context(), orderID, userID, req.Reason)
+	_, err = h.orderSvc.CancelDelivery(c.Request.Context(), orderID, userID, req.Reason)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "delivery cancelled", order)
+	dto.Success(c, http.StatusOK, "Order marked as cancelled/failed successfully", nil)
 }
 
 // FailDelivery marks delivery as failed.
@@ -229,10 +265,10 @@ func (h *OrderHandler) FailDelivery(c *gin.Context) {
 		return
 	}
 
-	order, err := h.orderSvc.FailDelivery(c.Request.Context(), orderID, userID, req.Reason)
+	_, err = h.orderSvc.FailDelivery(c.Request.Context(), orderID, userID, req.Reason)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "delivery failed", order)
+	dto.Success(c, http.StatusOK, "Order marked as cancelled/failed successfully", nil)
 }

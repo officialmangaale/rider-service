@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 )
 
@@ -18,14 +19,23 @@ func NewLocationService(riderRepo *repository.RiderRepository, historyRepo *repo
 }
 
 // UpdateLocation updates the rider's current position in users table and logs to history.
-func (s *LocationService) UpdateLocation(ctx context.Context, userID string, lat, lng float64, heading, speed *float64) error {
+func (s *LocationService) UpdateLocation(ctx context.Context, userID string, lat, lng float64, heading, speed *float64) (*dto.UpdateLocationResponse, error) {
 	// Update current position in users table
-	if err := s.riderRepo.UpdateLocation(ctx, userID, lat, lng); err != nil {
-		return err
+	lastUpdate, isAvailable, err := s.riderRepo.UpdateLocation(ctx, userID, lat, lng)
+	if err != nil {
+		return nil, err
 	}
 	// Log to location history (fire-and-forget for high frequency)
 	_ = s.historyRepo.Record(ctx, userID, lat, lng, heading, speed)
-	return nil
+
+	if lastUpdate == nil {
+		return &dto.UpdateLocationResponse{IsAvailable: isAvailable}, nil
+	}
+
+	return &dto.UpdateLocationResponse{
+		IsAvailable:        isAvailable,
+		LastLocationUpdate: *lastUpdate,
+	}, nil
 }
 
 // GetCurrentLocation returns the rider's last known position from users table.

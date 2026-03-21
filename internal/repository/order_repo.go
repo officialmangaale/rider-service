@@ -159,9 +159,9 @@ func (r *OrderRepository) MarkDelivered(ctx context.Context, tx *sql.Tx, orderID
 	return err
 }
 
-// GetOrderHistoryForRider returns past delivered/cancelled orders for a rider.
+// GetOrderHistoryForRider returns past delivered/cancelled/failed orders for a rider.
 func (r *OrderRepository) GetOrderHistoryForRider(ctx context.Context, riderID string, limit, offset int) ([]*models.Order, int64, error) {
-	countQuery := `SELECT COUNT(*) FROM orders WHERE delivery_partner_id = $1 AND order_status IN ('delivered', 'cancelled')`
+	countQuery := `SELECT COUNT(*) FROM orders WHERE delivery_partner_id = $1 AND order_status IN ('delivered', 'cancelled', 'failed')`
 	var total int64
 	if err := r.db.QueryRowContext(ctx, countQuery, riderID).Scan(&total); err != nil {
 		return nil, 0, err
@@ -169,7 +169,7 @@ func (r *OrderRepository) GetOrderHistoryForRider(ctx context.Context, riderID s
 
 	query := fmt.Sprintf(`SELECT %s %s
 		WHERE o.delivery_partner_id = $1
-		AND o.order_status IN ('delivered', 'cancelled')
+		AND o.order_status IN ('delivered', 'cancelled', 'failed')
 		ORDER BY o.updated_at DESC
 		LIMIT $2 OFFSET $3`, orderSelectColumns, orderFromJoin)
 

@@ -3,6 +3,7 @@ package service
 import (
 	"context"
 
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 )
@@ -40,26 +41,67 @@ func (s *RiderService) UpdateBankDetails(ctx context.Context, userID string, ban
 }
 
 // UpdateKYC updates KYC metadata.
-func (s *RiderService) UpdateKYC(ctx context.Context, userID string, kycData, verificationDocs *string) (*models.User, error) {
-	return s.riderRepo.UpdateKYC(ctx, userID, kycData, verificationDocs)
+func (s *RiderService) UpdateKYC(ctx context.Context, userID string, licenseNumber, kycData, verificationDocs *string) (*models.User, error) {
+	return s.riderRepo.UpdateKYC(ctx, userID, licenseNumber, kycData, verificationDocs)
 }
 
 // GetOnboardingStatus checks profile completion.
-func (s *RiderService) GetOnboardingStatus(ctx context.Context, userID string) (*models.OnboardingStatus, error) {
+func (s *RiderService) GetOnboardingStatus(ctx context.Context, userID string) (*dto.OnboardingStatusResponse, error) {
 	rider, err := s.riderRepo.GetByID(ctx, userID)
 	if err != nil {
 		return nil, err
 	}
 
-	status := &models.OnboardingStatus{
-		ProfileComplete: rider.FirstName != nil && rider.Phone != nil,
-		VehicleComplete: rider.VehicleType != nil && rider.VehicleRegistrationNumber != nil,
-		KYCComplete:     rider.KYCVerified,
-		BankComplete:    rider.BankDetails != nil,
-	}
-	status.FullyOnboarded = status.ProfileComplete && status.VehicleComplete && status.KYCComplete && status.BankComplete
+	profileComplete := rider.FirstName != nil && rider.Phone != nil
+	vehicleComplete := rider.VehicleType != nil && rider.VehicleRegistrationNumber != nil
+	kycComplete := rider.KYCVerified || rider.VerificationDocs != nil
+	bankComplete := rider.BankDetails != nil
 
-	return status, nil
+	completed := []string{}
+	pending := []string{}
+
+	if profileComplete {
+		completed = append(completed, "profile")
+	} else {
+		pending = append(pending, "profile")
+	}
+
+	if kycComplete {
+		completed = append(completed, "kyc")
+	} else {
+		pending = append(pending, "kyc")
+	}
+
+	if vehicleComplete {
+		completed = append(completed, "vehicle")
+	} else {
+		pending = append(pending, "vehicle")
+	}
+
+	if bankComplete {
+		completed = append(completed, "bank_details")
+	} else {
+		pending = append(pending, "bank_details")
+	}
+
+	status := "pending_documents"
+	isReady := false
+	if len(pending) == 0 {
+		if rider.KYCVerified {
+			status = "approved"
+			isReady = true
+		} else {
+			status = "under_review"
+		}
+	}
+
+	return &dto.OnboardingStatusResponse{
+		CurrentStatus:   status,
+		CompletedSteps:  completed,
+		PendingSteps:    pending,
+		RejectionReason: nil,
+		IsReadyToRide:   isReady,
+	}, nil
 }
 
 // GoOnline sets the rider as available.

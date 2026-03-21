@@ -11,25 +11,33 @@ type UpdateProfileRequest struct {
 
 // UpdateVehicleRequest for vehicle fields in users table.
 type UpdateVehicleRequest struct {
-	VehicleType               *string  `json:"vehicle_type"`
-	VehicleRegistrationNumber *string  `json:"vehicle_registration_number"`
-	VehicleDetails            *string  `json:"vehicle_details"`     // JSON string
-	InsuranceDetails          *string  `json:"insurance_details"`   // JSON string
-	MaxCarryCapacityKg        *float64 `json:"max_carry_capacity_kg"`
-	LicenseNumber             *string  `json:"license_number"`
-	LicenseExpiry             *string  `json:"license_expiry"` // date string
+	VehicleType          string `json:"vehicle_type"`
+	Make                 string `json:"make"`
+	Model                string `json:"model"`
+	Year                 int    `json:"year"`
+	RegistrationNumber   string `json:"registration_number"`
+	RCDocumentURL        string `json:"rc_document_url"`
+	InsuranceDocumentURL string `json:"insurance_document_url"`
 }
 
 // UpdateBankDetailsRequest for bank/payout fields in users table.
 type UpdateBankDetailsRequest struct {
-	BankDetails  *string `json:"bank_details"`  // JSON string
-	PayoutMethods *string `json:"payout_methods"` // JSON string
+	AccountHolderName string `json:"account_holder_name"`
+	AccountNumber     string `json:"account_number"`
+	IFSCCode          string `json:"ifsc_code"`
+	BankName          string `json:"bank_name"`
+	BranchName        string `json:"branch_name"`
 }
 
 // UpdateKYCRequest for KYC fields in users table.
 type UpdateKYCRequest struct {
-	KYCData          *string `json:"kyc_data"`          // JSON string
-	VerificationDocs *string `json:"verification_docs"` // JSON string
+	DrivingLicenseNumber   string `json:"driving_license_number"`
+	DrivingLicenseFrontURL string `json:"driving_license_front_url"`
+	DrivingLicenseBackURL  string `json:"driving_license_back_url"`
+	NationalIDType         string `json:"national_id_type"`
+	NationalIDNumber       string `json:"national_id_number"`
+	NationalIDFrontURL     string `json:"national_id_front_url"`
+	NationalIDBackURL      string `json:"national_id_back_url"`
 }
 
 // UpdateLocationRequest for GPS location update.

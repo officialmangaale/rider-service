@@ -114,13 +114,14 @@ func (r *RiderRepository) UpdateBankDetails(ctx context.Context, userID string, 
 }
 
 // UpdateKYC updates KYC-related fields.
-func (r *RiderRepository) UpdateKYC(ctx context.Context, userID string, kycData, verificationDocs *string) (*models.User, error) {
+func (r *RiderRepository) UpdateKYC(ctx context.Context, userID string, licenseNumber, kycData, verificationDocs *string) (*models.User, error) {
 	query := `UPDATE users SET
-		kyc_data = COALESCE($2::jsonb, kyc_data),
-		verification_docs = COALESCE($3::jsonb, verification_docs),
+		license_number = COALESCE($2, license_number),
+		kyc_data = COALESCE($3::jsonb, kyc_data),
+		verification_docs = COALESCE($4::jsonb, verification_docs),
 		updated_at = NOW()
 		WHERE id = $1 AND primary_role = 'delivery_driver'`
-	_, err := r.db.ExecContext(ctx, query, userID, kycData, verificationDocs)
+	_, err := r.db.ExecContext(ctx, query, userID, licenseNumber, kycData, verificationDocs)
 	if err != nil {
 		return nil, err
 	}
@@ -150,12 +151,19 @@ func (r *RiderRepository) SetOnTripTx(ctx context.Context, tx *sql.Tx, userID st
 	return err
 }
 
-// UpdateLocation updates current lat/lng in users table.
-func (r *RiderRepository) UpdateLocation(ctx context.Context, userID string, lat, lng float64) error {
+// UpdateLocation updates current lat/lng in users table and returns the last update time and availability.
+func (r *RiderRepository) UpdateLocation(ctx context.Context, userID string, lat, lng float64) (*time.Time, bool, error) {
 	query := `UPDATE users SET current_lat = $2, current_lng = $3, last_location_update = NOW(), updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'`
-	_, err := r.db.ExecContext(ctx, query, userID, lat, lng)
-	return err
+		WHERE id = $1 AND primary_role = 'delivery_driver'
+		RETURNING last_location_update, is_available`
+	
+	var lastUpdate time.Time
+	var isAvailable bool
+	err := r.db.QueryRowContext(ctx, query, userID, lat, lng).Scan(&lastUpdate, &isAvailable)
+	if err != nil {
+		return nil, false, err
+	}
+	return &lastUpdate, isAvailable, nil
 }
 
 // IncrementDeliveryCount increments total_deliveries and adds to earnings.

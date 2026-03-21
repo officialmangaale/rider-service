@@ -28,7 +28,18 @@ func (h *EarningsHandler) GetSummary(c *gin.Context) {
 		dto.InternalError(c, "Failed to fetch earnings summary")
 		return
 	}
-	dto.Success(c, http.StatusOK, "earnings summary", summary)
+
+	resp := dto.EarningsSummaryResponse{
+		TodayEarnings:   summary.TodayEarnings,
+		WeeklyEarnings:  summary.WeekEarnings,
+		MonthlyEarnings: summary.MonthEarnings,
+		TotalEarnings:   summary.MonthEarnings, // Mocked for now
+		WalletBalance:   summary.TodayEarnings, // Mocked for now
+		PendingPayout:   0.0,                   // Mocked for now
+		SettledPayout:   summary.MonthEarnings, // Mocked for now
+	}
+
+	dto.Success(c, http.StatusOK, "earnings summary", resp)
 }
 
 // GetHistory returns paginated earnings ledger.
