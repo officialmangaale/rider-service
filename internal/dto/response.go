@@ -153,9 +153,11 @@ type OrderResponse struct {
 
 // RiderProfileResponse for GET /api/v1/rider/profile
 type RiderProfileResponse struct {
-	User    UserProfile    `json:"user"`
-	Rider   RiderStats     `json:"rider"`
-	Vehicle VehicleProfile `json:"vehicle"`
+	User               UserProfile          `json:"user"`
+	Rider              RiderStats           `json:"rider"`
+	Vehicle            VehicleProfile       `json:"vehicle"`
+	LinkedRestaurants  []LinkedRestaurantDTO `json:"linked_restaurants,omitempty"`
+	Mode               string               `json:"mode"` // "platform" or "restaurant_owned"
 }
 
 type UserProfile struct {
@@ -174,6 +176,52 @@ type RiderStats struct {
 type VehicleProfile struct {
 	VehicleType    string `json:"vehicle_type"`
 	RegistrationNo string `json:"registration_no"`
+}
+
+// LinkedRestaurantDTO for the rider's linked restaurants.
+type LinkedRestaurantDTO struct {
+	RestaurantID   int    `json:"restaurant_id"`
+	RestaurantName string `json:"restaurant_name"`
+	Status         string `json:"status"`
+}
+
+// RiderDeliveryOrderResponse is the Flutter-friendly response for restaurant-owned rider orders.
+type RiderDeliveryOrderResponse struct {
+	OrderID         int                  `json:"order_id"`
+	DeliveryOrderID int                  `json:"delivery_order_id"`
+	RestaurantID    int                  `json:"restaurant_id"`
+	RestaurantName  string               `json:"restaurant_name"`
+	RestaurantPhone string               `json:"restaurant_phone"`
+	DeliveryStatus  string               `json:"delivery_status"`
+	PaymentMethod   string               `json:"payment_method"`
+	AmountToCollect float64              `json:"amount_to_collect"`
+	Customer        *CustomerInfo        `json:"customer"`
+	DeliveryAddress *DeliveryAddressInfo  `json:"delivery_address"`
+	PickupAddress   *PickupAddressInfo   `json:"pickup_address"`
+	ItemsSummary    string               `json:"items_summary"`
+	MapsURL         string               `json:"maps_url"`
+	AssignmentType  string               `json:"assignment_type"`
+	AssignedAt      *time.Time           `json:"assigned_at,omitempty"`
+}
+
+// CustomerInfo for the delivery order response.
+type CustomerInfo struct {
+	Name  string `json:"name"`
+	Phone string `json:"phone"`
+}
+
+// DeliveryAddressInfo for the delivery order response.
+type DeliveryAddressInfo struct {
+	Address   string  `json:"address"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
+}
+
+// PickupAddressInfo for the delivery order response.
+type PickupAddressInfo struct {
+	Address   string  `json:"address"`
+	Latitude  float64 `json:"latitude"`
+	Longitude float64 `json:"longitude"`
 }
 
 // EarningsSummaryResponse for GET /api/v1/earnings/summary

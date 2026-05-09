@@ -25,6 +25,11 @@ func (s *RiderService) GetProfile(ctx context.Context, userID string) (*models.U
 	return s.riderRepo.GetByID(ctx, userID)
 }
 
+// GetRestaurantsForRider returns all linked restaurants for a rider.
+func (s *RiderService) GetRestaurantsForRider(ctx context.Context, riderID string) ([]models.LinkedRestaurant, error) {
+	return s.riderRepo.GetRestaurantsForRider(ctx, riderID)
+}
+
 // UpdateProfile updates basic profile fields.
 func (s *RiderService) UpdateProfile(ctx context.Context, userID string, firstName, lastName, email, displayName, avatarURL *string) (*models.User, error) {
 	return s.riderRepo.UpdateProfile(ctx, userID, firstName, lastName, email, displayName, avatarURL)

@@ -66,6 +66,23 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 		avgRating = *rider.RatingAvg
 	}
 
+	// Fetch linked restaurants
+	linked, err := h.riderSvc.GetRestaurantsForRider(c.Request.Context(), userID)
+	var linkedDTOs []dto.LinkedRestaurantDTO
+	mode := "platform"
+	if err == nil && len(linked) > 0 {
+		for _, l := range linked {
+			linkedDTOs = append(linkedDTOs, dto.LinkedRestaurantDTO{
+				RestaurantID:   l.RestaurantID,
+				RestaurantName: l.RestaurantName,
+				Status:         l.Status,
+			})
+		}
+		// If they have any active links, we can consider them in "restaurant_owned" mode
+		// Or if the app uses the array length. We'll set mode based on presence.
+		mode = "restaurant_owned"
+	}
+
 	resp := dto.RiderProfileResponse{
 		User: dto.UserProfile{
 			FirstName: firstName,
@@ -82,6 +99,8 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 			VehicleType:    vehicleType,
 			RegistrationNo: registrationNo,
 		},
+		LinkedRestaurants: linkedDTOs,
+		Mode:              mode,
 	}
 
 	dto.Success(c, http.StatusOK, "profile fetched", resp)

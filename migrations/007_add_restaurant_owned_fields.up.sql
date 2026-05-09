@@ -1,0 +1,7 @@
+ALTER TABLE public.delivery_orders
+ADD COLUMN IF NOT EXISTS rider_user_id VARCHAR(100),
+ADD COLUMN IF NOT EXISTS assignment_type VARCHAR(40) DEFAULT 'platform',
+ADD COLUMN IF NOT EXISTS restaurant_owned BOOLEAN DEFAULT false,
+ADD COLUMN IF NOT EXISTS restaurant_name VARCHAR(150),
+ADD COLUMN IF NOT EXISTS restaurant_phone VARCHAR(20),
+ADD COLUMN IF NOT EXISTS assigned_at TIMESTAMP NULL;

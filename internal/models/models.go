@@ -154,5 +154,12 @@ type OnboardingStatus struct {
 	FullyOnboarded   bool `json:"fully_onboarded"`
 }
 
+// LinkedRestaurant represents a restaurant linked to a rider.
+type LinkedRestaurant struct {
+	RestaurantID   int    `json:"restaurant_id"`
+	RestaurantName string `json:"restaurant_name"`
+	Status         string `json:"status"`
+}
+
 // Ensure sql.NullString is available.
 var _ = sql.NullString{}

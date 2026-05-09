@@ -5,14 +5,21 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/handler"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/service"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
 )
 
 // Setup creates all repositories → services → handlers, registers routes, and returns the engine.
-func Setup(db *sql.DB, jwtSecret string) *gin.Engine {
+func Setup(
+	db *sql.DB,
+	cfg *config.Config,
+	hub *ws.Hub,
+	deliverySvc *service.DeliveryService,
+) *gin.Engine {
 	r := gin.Default()
 	r.Use(middleware.CORSMiddleware())
 
@@ -40,6 +47,7 @@ func Setup(db *sql.DB, jwtSecret string) *gin.Engine {
 	locationH := handler.NewLocationHandler(locationSvc)
 	earningsH := handler.NewEarningsHandler(earningsSvc)
 	notifH := handler.NewNotificationHandler(notifSvc)
+	deliveryH := handler.NewDeliveryHandler(deliverySvc)
 
 	// ==================== PUBLIC ROUTES ====================
 	r.GET("/health", healthH.Health)
@@ -47,9 +55,15 @@ func Setup(db *sql.DB, jwtSecret string) *gin.Engine {
 	apiV1Public := r.Group("/api/v1")
 	apiV1Public.POST("/upload", uploadH.HandleUpload)
 
+	// ==================== WEBSOCKET ROUTES ====================
+	// Rider WebSocket uses token from query or auth header
+	r.GET("/ws/rider", hub.HandleRiderWS(cfg.JWTSecret))
+	// Tracking WebSocket for customer app
+	r.GET("/ws/tracking/orders/:orderId", hub.HandleOrderTrackingWS())
+
 	// ==================== PROTECTED ROUTES ====================
 	auth := r.Group("/api/v1")
-	auth.Use(middleware.AuthMiddleware(jwtSecret))
+	auth.Use(middleware.AuthMiddleware(cfg.JWTSecret))
 
 	// --- Rider Profile & Onboarding ---
 	rider := auth.Group("/rider")
@@ -95,6 +109,22 @@ func Setup(db *sql.DB, jwtSecret string) *gin.Engine {
 		location.POST("/update", locationH.UpdateLocation)
 		location.GET("/current", locationH.GetCurrentLocation)
 	}
+
+	// --- NEW Delivery Lifecycle ---
+	newDelivery := auth.Group("/riders")
+	{
+		newDelivery.POST("/location", deliveryH.UpdateLocation)
+		newDelivery.POST("/availability", deliveryH.UpdateAvailability)
+		newDelivery.GET("/order-requests", deliveryH.GetOrderRequests)
+		newDelivery.POST("/order-requests/:requestId/accept", deliveryH.AcceptRequest)
+		newDelivery.POST("/order-requests/:requestId/reject", deliveryH.RejectRequest)
+		newDelivery.GET("/orders", deliveryH.GetRiderOrders)
+		newDelivery.GET("/orders/:orderId", deliveryH.GetRiderOrderDetail)
+		newDelivery.POST("/orders/:orderId/status", deliveryH.UpdateDeliveryStatus)
+	}
+
+	// --- NEW Delivery Tracking (For Customer App, internal or authenticated) ---
+	r.GET("/api/v1/delivery/orders/:orderId/tracking", deliveryH.GetDeliveryTracking)
 
 	// --- Earnings ---
 	earnings := auth.Group("/earnings")

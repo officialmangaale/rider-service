@@ -199,3 +199,34 @@ func (r *RiderRepository) GetCurrentLocation(ctx context.Context, userID string)
 	err := r.db.QueryRowContext(ctx, query, userID).Scan(&lat, &lng, &lastUpdate)
 	return lat, lng, lastUpdate, err
 }
+
+// GetRestaurantsForRider fetches linked restaurants for a rider.
+func (r *RiderRepository) GetRestaurantsForRider(ctx context.Context, riderUserID string) ([]models.LinkedRestaurant, error) {
+	query := `SELECT restaurant_id, restaurant_name, status FROM restaurant_riders WHERE rider_user_id = $1`
+	rows, err := r.db.QueryContext(ctx, query, riderUserID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var linked []models.LinkedRestaurant
+	for rows.Next() {
+		var lr models.LinkedRestaurant
+		if err := rows.Scan(&lr.RestaurantID, &lr.RestaurantName, &lr.Status); err != nil {
+			return nil, err
+		}
+		linked = append(linked, lr)
+	}
+	return linked, rows.Err()
+}
+
+// HasActiveRestaurantOwnRiders checks if a restaurant has active restaurant-owned riders.
+func (r *RiderRepository) HasActiveRestaurantOwnRiders(ctx context.Context, restaurantID int) (bool, error) {
+	query := `SELECT EXISTS(SELECT 1 FROM restaurant_riders rr JOIN users u ON rr.rider_user_id = u.id WHERE rr.restaurant_id = $1 AND rr.is_active = true AND u.is_available = true)`
+	var exists bool
+	err := r.db.QueryRowContext(ctx, query, restaurantID).Scan(&exists)
+	if err != nil {
+		return false, err
+	}
+	return exists, nil
+}
