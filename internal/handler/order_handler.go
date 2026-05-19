@@ -46,17 +46,24 @@ func (h *OrderHandler) GetActiveOrder(c *gin.Context) {
 		return
 	}
 
+	customerName := "Customer"
+	pickupAddress := order.RestaurantAddress
+	deliveryAddress := ""
+	if order.DeliveryAddress != nil {
+		deliveryAddress = *order.DeliveryAddress
+	}
+
 	resp := dto.OrderResponse{
 		ID:              strconv.Itoa(order.OrderID),
-		AssignmentID:    "asn_789xyz",                  // Mocked
-		RestaurantName:  "Pizza Paradise",              // Mocked
-		CustomerName:    "John Doe",                    // Mocked
-		PickupAddress:   "123 Main St, Central Plaza",  // Mocked
-		DeliveryAddress: "456 Oak Avenue, Apt 4B",      // Mocked
+		AssignmentID:    "asn_789xyz",                  // Needs actual assignment if available
+		RestaurantName:  order.RestaurantName,
+		CustomerName:    customerName,
+		PickupAddress:   pickupAddress,
+		DeliveryAddress: deliveryAddress,
 		Status:          order.OrderStatus,
-		PaymentMethod:   "PREPAID",
-		CustomerPhone:   "+919876543210",               // Mocked
-		DistanceKm:      4.5,                           // Mocked
+		PaymentMethod:   "PREPAID", // Default or extract if available
+		CustomerPhone:   "",        // Customer phone if available
+		DistanceKm:      4.5,       // Calculate if lat/lng available
 	}
 
 	dto.Success(c, http.StatusOK, "active order", resp)
@@ -72,6 +79,13 @@ func (h *OrderHandler) GetIncomingAssignment(c *gin.Context) {
 		return
 	}
 
+	customerName := "Customer"
+	pickupAddress := order.RestaurantAddress
+	deliveryAddress := ""
+	if order.DeliveryAddress != nil {
+		deliveryAddress = *order.DeliveryAddress
+	}
+
 	resp := dto.LiveOrderResponse{
 		Assignment: &dto.AssignmentResponse{
 			ID:                 assignment.ID,
@@ -79,17 +93,17 @@ func (h *OrderHandler) GetIncomingAssignment(c *gin.Context) {
 		},
 		Order: &dto.OrderResponse{
 			ID:              strconv.Itoa(order.OrderID),
-			RestaurantName:  "Pizza Paradise",             // Mocked
-			CustomerName:    "John Doe",                   // Mocked
-			PickupAddress:   "123 Main St, Central Plaza", // Mocked
-			DeliveryAddress: "456 Oak Avenue, Apt 4B",     // Mocked
-			DistanceKm:      4.5,                          // Mocked
-			BasePayout:      40.0,                         // Mocked
-			DistancePayout:  15.0,                         // Mocked
-			WaitingCharges:  0.0,                          // Mocked
-			SurgeBonus:      20.0,                         // Mocked
+			RestaurantName:  order.RestaurantName,
+			CustomerName:    customerName,
+			PickupAddress:   pickupAddress,
+			DeliveryAddress: deliveryAddress,
+			DistanceKm:      4.5, // Calculate if lat/lng available
+			BasePayout:      order.DeliveryFee,
+			DistancePayout:  0.0,
+			WaitingCharges:  0.0,
+			SurgeBonus:      0.0,
 			TipAmount:       order.TipAmount,
-			ItemsCount:      3,                            // Mocked
+			ItemsCount:      1, // Count from order items if available
 		},
 	}
 

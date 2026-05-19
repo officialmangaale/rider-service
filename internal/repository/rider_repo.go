@@ -56,9 +56,9 @@ func scanRider(row interface{ Scan(...interface{}) error }) (*models.User, error
 	return &u, nil
 }
 
-// GetByID fetches a rider (delivery_driver) by UUID from users table.
+// GetByID fetches a rider by UUID from users table.
 func (r *RiderRepository) GetByID(ctx context.Context, userID string) (*models.User, error) {
-	query := fmt.Sprintf(`SELECT %s FROM users u WHERE u.id = $1 AND u.primary_role = 'delivery_driver'`, riderSelectColumns)
+	query := fmt.Sprintf(`SELECT %s FROM users u WHERE u.id = $1 AND u.primary_role IN ('delivery_driver', 'rider')`, riderSelectColumns)
 	row := r.db.QueryRowContext(ctx, query, userID)
 	return scanRider(row)
 }
@@ -72,7 +72,7 @@ func (r *RiderRepository) UpdateProfile(ctx context.Context, userID string, firs
 		display_name = COALESCE($5, display_name),
 		avatar_url = COALESCE($6, avatar_url),
 		updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'`
+		WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')`
 	_, err := r.db.ExecContext(ctx, query, userID, firstName, lastName, email, displayName, avatarURL)
 	if err != nil {
 		return nil, err
@@ -91,7 +91,7 @@ func (r *RiderRepository) UpdateVehicle(ctx context.Context, userID string, vehi
 		license_number = COALESCE($7, license_number),
 		license_expiry = COALESCE($8::date, license_expiry),
 		updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'`
+		WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')`
 	_, err := r.db.ExecContext(ctx, query, userID, vehicleType, regNumber, vehicleDetails, insuranceDetails, maxCapacity, licenseNumber, licenseExpiry)
 	if err != nil {
 		return nil, err
@@ -105,7 +105,7 @@ func (r *RiderRepository) UpdateBankDetails(ctx context.Context, userID string, 
 		bank_details = COALESCE($2::jsonb, bank_details),
 		payout_methods = COALESCE($3::jsonb, payout_methods),
 		updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'`
+		WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')`
 	_, err := r.db.ExecContext(ctx, query, userID, bankDetails, payoutMethods)
 	if err != nil {
 		return nil, err
@@ -120,7 +120,7 @@ func (r *RiderRepository) UpdateKYC(ctx context.Context, userID string, licenseN
 		kyc_data = COALESCE($3::jsonb, kyc_data),
 		verification_docs = COALESCE($4::jsonb, verification_docs),
 		updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'`
+		WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')`
 	_, err := r.db.ExecContext(ctx, query, userID, licenseNumber, kycData, verificationDocs)
 	if err != nil {
 		return nil, err
@@ -131,7 +131,7 @@ func (r *RiderRepository) UpdateKYC(ctx context.Context, userID string, licenseN
 // SetAvailability updates is_available flag.
 func (r *RiderRepository) SetAvailability(ctx context.Context, userID string, available bool) error {
 	query := `UPDATE users SET is_available = $2, updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'`
+		WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')`
 	_, err := r.db.ExecContext(ctx, query, userID, available)
 	return err
 }
@@ -139,7 +139,7 @@ func (r *RiderRepository) SetAvailability(ctx context.Context, userID string, av
 // SetOnTrip updates on_trip flag.
 func (r *RiderRepository) SetOnTrip(ctx context.Context, userID string, onTrip bool) error {
 	query := `UPDATE users SET on_trip = $2, updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'`
+		WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')`
 	_, err := r.db.ExecContext(ctx, query, userID, onTrip)
 	return err
 }
@@ -154,9 +154,9 @@ func (r *RiderRepository) SetOnTripTx(ctx context.Context, tx *sql.Tx, userID st
 // UpdateLocation updates current lat/lng in users table and returns the last update time and availability.
 func (r *RiderRepository) UpdateLocation(ctx context.Context, userID string, lat, lng float64) (*time.Time, bool, error) {
 	query := `UPDATE users SET current_lat = $2, current_lng = $3, last_location_update = NOW(), updated_at = NOW()
-		WHERE id = $1 AND primary_role = 'delivery_driver'
+		WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')
 		RETURNING last_location_update, is_available`
-	
+
 	var lastUpdate time.Time
 	var isAvailable bool
 	err := r.db.QueryRowContext(ctx, query, userID, lat, lng).Scan(&lastUpdate, &isAvailable)
@@ -186,7 +186,7 @@ func (r *RiderRepository) IncrementDeliveryCount(ctx context.Context, tx *sql.Tx
 // GetAvailability returns current is_available and on_trip state.
 func (r *RiderRepository) GetAvailability(ctx context.Context, userID string) (bool, bool, error) {
 	var available, onTrip bool
-	query := `SELECT is_available, on_trip FROM users WHERE id = $1 AND primary_role = 'delivery_driver'`
+	query := `SELECT is_available, on_trip FROM users WHERE id = $1 AND primary_role IN ('delivery_driver', 'rider')`
 	err := r.db.QueryRowContext(ctx, query, userID).Scan(&available, &onTrip)
 	return available, onTrip, err
 }

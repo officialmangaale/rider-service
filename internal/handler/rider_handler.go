@@ -3,6 +3,7 @@ package handler
 import (
 	"encoding/json"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/gin-gonic/gin"
@@ -98,9 +99,27 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 		Vehicle: dto.VehicleProfile{
 			VehicleType:    vehicleType,
 			RegistrationNo: registrationNo,
+			VehicleNumber:  registrationNo,
 		},
-		LinkedRestaurants: linkedDTOs,
-		Mode:              mode,
+		LinkedRestaurants:         linkedDTOs,
+		Mode:                      mode,
+		ID:                        rider.ID,
+		FirstName:                 firstName,
+		LastName:                  lastName,
+		Phone:                     phone,
+		Email:                     stringPtrValue(rider.Email),
+		Status:                    stringPtrValue(rider.Status),
+		VehicleType:               vehicleType,
+		VehicleRegistrationNumber: registrationNo,
+		LicenseNumber:             stringPtrValue(rider.LicenseNumber),
+		KYCVerified:               rider.KYCVerified,
+		KYCData:                   jsonFieldValue(rider.KYCData),
+		VerificationDocs:          jsonFieldValue(rider.VerificationDocs),
+		VehicleDetails:            jsonFieldValue(rider.VehicleDetails),
+		InsuranceDetails:          jsonFieldValue(rider.InsuranceDetails),
+		BankDetails:               jsonFieldValue(rider.BankDetails),
+		IsAvailable:               rider.IsAvailable,
+		OnTrip:                    rider.OnTrip,
 	}
 
 	dto.Success(c, http.StatusOK, "profile fetched", resp)
@@ -147,7 +166,8 @@ func (h *RiderHandler) UpdateVehicle(c *gin.Context) {
 	insuranceBytes, _ := json.Marshal(insuranceDetailsMap)
 	insuranceStr := string(insuranceBytes)
 
-	rider, err := h.riderSvc.UpdateVehicle(c.Request.Context(), userID, &req.VehicleType, &req.RegistrationNumber, &vehicleDetailsStr, &insuranceStr, nil, nil, nil)
+	registrationNumber := firstNonEmpty(req.RegistrationNumber, req.RegistrationNo, req.VehicleNumber)
+	rider, err := h.riderSvc.UpdateVehicle(c.Request.Context(), userID, &req.VehicleType, &registrationNumber, &vehicleDetailsStr, &insuranceStr, nil, nil, nil)
 	if err != nil {
 		dto.InternalError(c, "Failed to update vehicle")
 		return
@@ -200,7 +220,8 @@ func (h *RiderHandler) UpdateKYC(c *gin.Context) {
 	docsBytes, _ := json.Marshal(verificationDocsMap)
 	docsStr := string(docsBytes)
 
-	rider, err := h.riderSvc.UpdateKYC(c.Request.Context(), userID, &req.DrivingLicenseNumber, &kycDataStr, &docsStr)
+	licenseNumber := firstNonEmpty(req.DrivingLicenseNumber, req.LicenseNumber)
+	rider, err := h.riderSvc.UpdateKYC(c.Request.Context(), userID, &licenseNumber, &kycDataStr, &docsStr)
 	if err != nil {
 		dto.InternalError(c, "Failed to update KYC")
 		return
@@ -253,7 +274,7 @@ func (h *RiderHandler) GoOffline(c *gin.Context) {
 // GetAvailability returns current availability.
 func (h *RiderHandler) GetAvailability(c *gin.Context) {
 	userID := middleware.GetUserID(c)
-	available, _, err := h.riderSvc.GetAvailability(c.Request.Context(), userID)
+	available, onTrip, err := h.riderSvc.GetAvailability(c.Request.Context(), userID)
 	if err != nil {
 		dto.InternalError(c, "Failed to get availability")
 		return
@@ -269,8 +290,37 @@ func (h *RiderHandler) GetAvailability(c *gin.Context) {
 
 	resp := dto.RiderAvailabilityResponse{
 		IsAvailable: available,
+		OnTrip:      onTrip,
 		ActiveShift: activeShift,
 	}
 
 	dto.Success(c, http.StatusOK, "availability", resp)
+}
+
+func stringPtrValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func firstNonEmpty(values ...string) string {
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed != "" {
+			return trimmed
+		}
+	}
+	return ""
+}
+
+func jsonFieldValue(value *string) interface{} {
+	if value == nil || *value == "" {
+		return nil
+	}
+	var decoded interface{}
+	if err := json.Unmarshal([]byte(*value), &decoded); err != nil {
+		return *value
+	}
+	return decoded
 }

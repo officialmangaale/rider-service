@@ -112,7 +112,8 @@ type UpdateLocationResponse struct {
 
 // RiderAvailabilityResponse matches GET /api/v1/rider/availability
 type RiderAvailabilityResponse struct {
-	IsAvailable bool         `json:"is_is_available"` // The user JSON specified `is_available: true`
+	IsAvailable bool         `json:"is_available"`
+	OnTrip      bool         `json:"on_trip"`
 	ActiveShift *ActiveShift `json:"active_shift,omitempty"`
 }
 
@@ -133,31 +134,48 @@ type AssignmentResponse struct {
 }
 
 type OrderResponse struct {
-	ID               string  `json:"id"`
-	AssignmentID     string  `json:"assignment_id,omitempty"`  // Used for active order
-	RestaurantName   string  `json:"restaurant_name"`
-	CustomerName     string  `json:"customer_name"`
-	PickupAddress    string  `json:"pickup_address"`
-	DeliveryAddress  string  `json:"delivery_address"`
-	DistanceKm       float64 `json:"distance_km"`
-	BasePayout       float64 `json:"base_payout"`
-	DistancePayout   float64 `json:"distance_payout"`
-	WaitingCharges   float64 `json:"waiting_charges"`
-	SurgeBonus       float64 `json:"surge_bonus"`
-	TipAmount        float64 `json:"tip_amount"`
-	ItemsCount       int     `json:"items_count"`
-	Status           string  `json:"status,omitempty"`         // Used for active order
-	PaymentMethod    string  `json:"payment_method,omitempty"` // Used for active order
-	CustomerPhone    string  `json:"customer_phone,omitempty"` // Used for active order
+	ID              string  `json:"id"`
+	AssignmentID    string  `json:"assignment_id,omitempty"` // Used for active order
+	RestaurantName  string  `json:"restaurant_name"`
+	CustomerName    string  `json:"customer_name"`
+	PickupAddress   string  `json:"pickup_address"`
+	DeliveryAddress string  `json:"delivery_address"`
+	DistanceKm      float64 `json:"distance_km"`
+	BasePayout      float64 `json:"base_payout"`
+	DistancePayout  float64 `json:"distance_payout"`
+	WaitingCharges  float64 `json:"waiting_charges"`
+	SurgeBonus      float64 `json:"surge_bonus"`
+	TipAmount       float64 `json:"tip_amount"`
+	ItemsCount      int     `json:"items_count"`
+	Status          string  `json:"status,omitempty"`         // Used for active order
+	PaymentMethod   string  `json:"payment_method,omitempty"` // Used for active order
+	CustomerPhone   string  `json:"customer_phone,omitempty"` // Used for active order
 }
 
 // RiderProfileResponse for GET /api/v1/rider/profile
 type RiderProfileResponse struct {
-	User               UserProfile          `json:"user"`
-	Rider              RiderStats           `json:"rider"`
-	Vehicle            VehicleProfile       `json:"vehicle"`
-	LinkedRestaurants  []LinkedRestaurantDTO `json:"linked_restaurants,omitempty"`
-	Mode               string               `json:"mode"` // "platform" or "restaurant_owned"
+	User                      UserProfile           `json:"user"`
+	Rider                     RiderStats            `json:"rider"`
+	Vehicle                   VehicleProfile        `json:"vehicle"`
+	LinkedRestaurants         []LinkedRestaurantDTO `json:"linked_restaurants,omitempty"`
+	Mode                      string                `json:"mode"` // "platform" or "restaurant_owned"
+	ID                        string                `json:"id,omitempty"`
+	FirstName                 string                `json:"first_name,omitempty"`
+	LastName                  string                `json:"last_name,omitempty"`
+	Phone                     string                `json:"phone,omitempty"`
+	Email                     string                `json:"email,omitempty"`
+	Status                    string                `json:"status,omitempty"`
+	VehicleType               string                `json:"vehicle_type,omitempty"`
+	VehicleRegistrationNumber string                `json:"vehicle_registration_number,omitempty"`
+	LicenseNumber             string                `json:"license_number,omitempty"`
+	KYCVerified               bool                  `json:"kyc_verified"`
+	KYCData                   interface{}           `json:"kyc_data,omitempty"`
+	VerificationDocs          interface{}           `json:"verification_docs,omitempty"`
+	VehicleDetails            interface{}           `json:"vehicle_details,omitempty"`
+	InsuranceDetails          interface{}           `json:"insurance_details,omitempty"`
+	BankDetails               interface{}           `json:"bank_details,omitempty"`
+	IsAvailable               bool                  `json:"is_available"`
+	OnTrip                    bool                  `json:"on_trip"`
 }
 
 type UserProfile struct {
@@ -176,6 +194,7 @@ type RiderStats struct {
 type VehicleProfile struct {
 	VehicleType    string `json:"vehicle_type"`
 	RegistrationNo string `json:"registration_no"`
+	VehicleNumber  string `json:"vehicle_number"`
 }
 
 // LinkedRestaurantDTO for the rider's linked restaurants.
@@ -196,7 +215,7 @@ type RiderDeliveryOrderResponse struct {
 	PaymentMethod   string               `json:"payment_method"`
 	AmountToCollect float64              `json:"amount_to_collect"`
 	Customer        *CustomerInfo        `json:"customer"`
-	DeliveryAddress *DeliveryAddressInfo  `json:"delivery_address"`
+	DeliveryAddress *DeliveryAddressInfo `json:"delivery_address"`
 	PickupAddress   *PickupAddressInfo   `json:"pickup_address"`
 	ItemsSummary    string               `json:"items_summary"`
 	MapsURL         string               `json:"maps_url"`

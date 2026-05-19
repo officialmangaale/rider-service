@@ -16,6 +16,8 @@ type UpdateVehicleRequest struct {
 	Model                string `json:"model"`
 	Year                 int    `json:"year"`
 	RegistrationNumber   string `json:"registration_number"`
+	RegistrationNo       string `json:"registration_no"`
+	VehicleNumber        string `json:"vehicle_number"`
 	RCDocumentURL        string `json:"rc_document_url"`
 	InsuranceDocumentURL string `json:"insurance_document_url"`
 }
@@ -31,6 +33,7 @@ type UpdateBankDetailsRequest struct {
 
 // UpdateKYCRequest for KYC fields in users table.
 type UpdateKYCRequest struct {
+	LicenseNumber          string `json:"license_number"`
 	DrivingLicenseNumber   string `json:"driving_license_number"`
 	DrivingLicenseFrontURL string `json:"driving_license_front_url"`
 	DrivingLicenseBackURL  string `json:"driving_license_back_url"`
@@ -65,7 +68,7 @@ type FailDeliveryRequest struct {
 
 // DeviceTokenRequest for push notification registration.
 type DeviceTokenRequest struct {
-	Platform  string `json:"platform" binding:"required"`   // "android", "ios"
+	Platform  string `json:"platform" binding:"required"` // "android", "ios"
 	PushToken string `json:"push_token" binding:"required"`
 }
 
