@@ -37,6 +37,20 @@ const orderFromJoin = `
 	LEFT JOIN restaurants r ON r.restaurant_id = o.restaurant_id
 `
 
+const activeOrderSelectColumns = `
+	o.order_id, o.customer_id, o.restaurant_id, COALESCE(o.delivery_partner_id, o.assigned_rider_user_id) as delivery_partner_id,
+	COALESCE(NULLIF(o.delivery_status, ''), o.order_status::text) as order_status, o.payment_status,
+	o.subtotal, o.tax_amount, o.delivery_fee, o.tip_amount, o.discount_amount, o.total_amount,
+	o.delivery_address, o.delivery_latitude, o.delivery_longitude,
+	o.order_type, o.order_number,
+	o.estimated_delivery_time, o.actual_delivery_time,
+	o.created_at, o.updated_at,
+	COALESCE(r.name, '') as restaurant_name,
+	COALESCE(r.street_address, '') as restaurant_address,
+	r.latitude as restaurant_lat,
+	r.longitude as restaurant_lng
+`
+
 func scanOrder(row interface{ Scan(...interface{}) error }) (*models.Order, error) {
 	var o models.Order
 	err := row.Scan(
@@ -59,9 +73,14 @@ func scanOrder(row interface{ Scan(...interface{}) error }) (*models.Order, erro
 // GetActiveOrderForRider returns the rider's current active delivery order.
 func (r *OrderRepository) GetActiveOrderForRider(ctx context.Context, riderID string) (*models.Order, error) {
 	query := fmt.Sprintf(`SELECT %s %s
-		WHERE o.delivery_partner_id = $1
-		AND o.order_status IN ('ready', 'out_for_delivery')
-		ORDER BY o.updated_at DESC LIMIT 1`, orderSelectColumns, orderFromJoin)
+		WHERE (
+			o.delivery_partner_id = $1
+			AND o.order_status IN ('ready', 'out_for_delivery')
+		) OR (
+			o.assigned_rider_user_id = $1
+			AND o.delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
+		)
+		ORDER BY COALESCE(o.assigned_at, o.updated_at) DESC LIMIT 1`, activeOrderSelectColumns, orderFromJoin)
 	row := r.db.QueryRowContext(ctx, query, riderID)
 	return scanOrder(row)
 }
