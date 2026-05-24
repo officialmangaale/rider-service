@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 )
@@ -45,6 +46,22 @@ func (r *StatusHistoryRepository) Record(ctx context.Context, tx *sql.Tx, orderI
 	} else {
 		_, err = r.db.ExecContext(ctx, query, orderID, fromStatus, toStatus, changedBy)
 	}
+	return err
+}
+
+// RecordWithMetadata inserts a status history entry with optional JSON metadata.
+func (r *StatusHistoryRepository) RecordWithMetadata(ctx context.Context, tx *sql.Tx, orderID int, fromStatus, toStatus string, changedBy string, metadata map[string]interface{}) error {
+	metadataBytes, err := json.Marshal(metadata)
+	if err != nil {
+		return err
+	}
+	query := `INSERT INTO delivery_status_history (order_id, from_status, to_status, changed_by, metadata)
+		VALUES ($1, $2, $3, $4, $5::jsonb)`
+	if tx != nil {
+		_, err = tx.ExecContext(ctx, query, orderID, fromStatus, toStatus, changedBy, string(metadataBytes))
+		return err
+	}
+	_, err = r.db.ExecContext(ctx, query, orderID, fromStatus, toStatus, changedBy, string(metadataBytes))
 	return err
 }
 

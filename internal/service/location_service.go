@@ -25,6 +25,7 @@ func (s *LocationService) UpdateLocation(ctx context.Context, userID string, lat
 	if err != nil {
 		return nil, err
 	}
+	_ = s.riderRepo.UpsertRealtimeLocation(ctx, userID, lat, lng)
 	// Log to location history (fire-and-forget for high frequency)
 	_ = s.historyRepo.Record(ctx, userID, lat, lng, heading, speed)
 

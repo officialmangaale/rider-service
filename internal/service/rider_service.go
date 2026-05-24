@@ -111,12 +111,18 @@ func (s *RiderService) GetOnboardingStatus(ctx context.Context, userID string) (
 
 // GoOnline sets the rider as available.
 func (s *RiderService) GoOnline(ctx context.Context, userID string) error {
-	return s.riderRepo.SetAvailability(ctx, userID, true)
+	if err := s.riderRepo.SetAvailability(ctx, userID, true); err != nil {
+		return err
+	}
+	return s.riderRepo.SetRealtimeAvailability(ctx, userID, true, true)
 }
 
 // GoOffline sets the rider as unavailable.
 func (s *RiderService) GoOffline(ctx context.Context, userID string) error {
-	return s.riderRepo.SetAvailability(ctx, userID, false)
+	if err := s.riderRepo.SetAvailability(ctx, userID, false); err != nil {
+		return err
+	}
+	return s.riderRepo.SetRealtimeAvailability(ctx, userID, false, false)
 }
 
 // GetAvailability returns current availability and trip state.

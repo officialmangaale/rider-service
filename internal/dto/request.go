@@ -66,6 +66,12 @@ type FailDeliveryRequest struct {
 	Reason string `json:"reason" binding:"required"`
 }
 
+// DeliveryProofRequest allows COD proof details when completing a delivery.
+type DeliveryProofRequest struct {
+	PaymentCollected *bool  `json:"payment_collected,omitempty"`
+	Notes            string `json:"notes,omitempty"`
+}
+
 // DeviceTokenRequest for push notification registration.
 type DeviceTokenRequest struct {
 	Platform  string `json:"platform" binding:"required"` // "android", "ios"

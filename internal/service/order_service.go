@@ -2,9 +2,12 @@ package service
 
 import (
 	"context"
+	"database/sql"
 	"fmt"
+	"strconv"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/constants"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 )
@@ -12,6 +15,7 @@ import (
 // OrderService handles order assignment and delivery lifecycle.
 type OrderService struct {
 	orderRepo      *repository.OrderRepository
+	deliveryRepo   *repository.DeliveryRepository
 	assignmentRepo *repository.AssignmentRepository
 	riderRepo      *repository.RiderRepository
 	earningsRepo   *repository.EarningsRepository
@@ -21,6 +25,7 @@ type OrderService struct {
 // NewOrderService creates a new OrderService.
 func NewOrderService(
 	orderRepo *repository.OrderRepository,
+	deliveryRepo *repository.DeliveryRepository,
 	assignmentRepo *repository.AssignmentRepository,
 	riderRepo *repository.RiderRepository,
 	earningsRepo *repository.EarningsRepository,
@@ -28,6 +33,7 @@ func NewOrderService(
 ) *OrderService {
 	return &OrderService{
 		orderRepo:      orderRepo,
+		deliveryRepo:   deliveryRepo,
 		assignmentRepo: assignmentRepo,
 		riderRepo:      riderRepo,
 		earningsRepo:   earningsRepo,
@@ -41,8 +47,25 @@ func (s *OrderService) GetAvailableOrders(ctx context.Context, limit, offset int
 }
 
 // GetActiveOrder returns the rider's current active delivery.
-func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*models.Order, error) {
-	return s.orderRepo.GetActiveOrderForRider(ctx, riderID)
+func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*models.ActiveOrder, error) {
+	if s.deliveryRepo != nil {
+		deliveryOrder, err := s.deliveryRepo.GetActiveOrderForRider(ctx, riderID)
+		if err == nil {
+			debug.Logf("active order lookup source=delivery_orders rider_id=%s order_id=%d status=%s", riderID, deliveryOrder.OrderID, deliveryOrder.DeliveryStatus)
+			return activeOrderFromDeliveryOrder(deliveryOrder), nil
+		}
+		if err != sql.ErrNoRows {
+			return nil, err
+		}
+	}
+
+	order, err := s.orderRepo.GetActiveOrderForRider(ctx, riderID)
+	if err != nil {
+		debug.Logf("active order lookup miss rider_id=%s err=%v", riderID, err)
+		return nil, err
+	}
+	debug.Logf("active order lookup source=orders rider_id=%s order_id=%d status=%s", riderID, order.OrderID, order.OrderStatus)
+	return activeOrderFromSharedOrder(order), nil
 }
 
 // GetIncomingAssignment returns the rider's pending assignment offer.
@@ -56,6 +79,81 @@ func (s *OrderService) GetIncomingAssignment(ctx context.Context, riderID string
 		return assignment, nil, err
 	}
 	return assignment, order, nil
+}
+
+func activeOrderFromDeliveryOrder(order *models.DeliveryOrder) *models.ActiveOrder {
+	pickupLat := order.PickupLatitude
+	pickupLng := order.PickupLongitude
+	dropLat := order.DropLatitude
+	dropLng := order.DropLongitude
+	assignmentType := order.AssignmentType
+	if assignmentType == "" {
+		assignmentType = "platform"
+	}
+
+	return &models.ActiveOrder{
+		ID:              strconv.Itoa(order.OrderID),
+		OrderID:         order.OrderID,
+		DeliveryOrderID: order.DeliveryOrderID,
+		RestaurantID:    order.RestaurantID,
+		RestaurantName:  order.RestaurantName,
+		RestaurantPhone: order.RestaurantPhone,
+		PickupAddress:   order.PickupAddress,
+		DeliveryAddress: order.DropAddress,
+		DropAddress:     order.DropAddress,
+		PickupLatitude:  &pickupLat,
+		PickupLongitude: &pickupLng,
+		DropLatitude:    &dropLat,
+		DropLongitude:   &dropLng,
+		Status:          order.DeliveryStatus,
+		DeliveryStatus:  order.DeliveryStatus,
+		PaymentMethod:   order.PaymentMode,
+		Amount:          order.Amount,
+		AmountToCollect: order.Amount,
+		AssignmentType:  assignmentType,
+		RestaurantOwned: order.RestaurantOwned,
+		AssignedAt:      order.AssignedAt,
+	}
+}
+
+func activeOrderFromSharedOrder(order *models.Order) *models.ActiveOrder {
+	pickupAddress := order.RestaurantAddress
+	dropAddress := ""
+	if order.DeliveryAddress != nil {
+		dropAddress = *order.DeliveryAddress
+	}
+
+	return &models.ActiveOrder{
+		ID:                strconv.Itoa(order.OrderID),
+		OrderID:           order.OrderID,
+		RestaurantID:      order.RestaurantID,
+		RestaurantName:    order.RestaurantName,
+		RestaurantPhone:   order.RestaurantPhone,
+		CustomerPhone:     order.CustomerPhone,
+		PickupAddress:     pickupAddress,
+		DeliveryAddress:   dropAddress,
+		DropAddress:       dropAddress,
+		PickupLatitude:    order.RestaurantLat,
+		PickupLongitude:   order.RestaurantLng,
+		DropLatitude:      order.DeliveryLatitude,
+		DropLongitude:     order.DeliveryLongitude,
+		Status:            order.OrderStatus,
+		DeliveryStatus:    order.OrderStatus,
+		PaymentMethod:     stringPtrValue(order.PaymentStatus),
+		Amount:            order.TotalAmount,
+		AmountToCollect:   order.TotalAmount,
+		BasePayout:        order.DeliveryFee,
+		TipAmount:         order.TipAmount,
+		AssignmentType:    "platform",
+		EstimatedDelivery: order.EstimatedDelivery,
+	}
+}
+
+func stringPtrValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
 }
 
 // AcceptAssignment accepts a delivery assignment with safe claim.
@@ -124,7 +222,7 @@ func (s *OrderService) PickedUp(ctx context.Context, orderID int, riderID string
 }
 
 // Delivered marks an order as delivered and creates earnings.
-func (s *OrderService) Delivered(ctx context.Context, orderID int, riderID string) (*models.Order, error) {
+func (s *OrderService) Delivered(ctx context.Context, orderID int, riderID string, paymentCollected *bool, notes string) (*models.Order, error) {
 	order, err := s.orderRepo.GetOrderByID(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("order not found")
@@ -152,9 +250,22 @@ func (s *OrderService) Delivered(ctx context.Context, orderID int, riderID strin
 		return nil, err
 	}
 
-	// Record audit history
-	if err := s.historyRepo.Record(ctx, tx, orderID, order.OrderStatus, string(constants.OrderDelivered), riderID); err != nil {
-		return nil, err
+	if paymentCollected != nil || notes != "" {
+		metadata := map[string]interface{}{}
+		if paymentCollected != nil {
+			metadata["payment_collected"] = *paymentCollected
+		}
+		if notes != "" {
+			metadata["notes"] = notes
+		}
+		if err := s.historyRepo.RecordWithMetadata(ctx, tx, orderID, order.OrderStatus, string(constants.OrderDelivered), riderID, metadata); err != nil {
+			return nil, err
+		}
+	} else {
+		// Record audit history
+		if err := s.historyRepo.Record(ctx, tx, orderID, order.OrderStatus, string(constants.OrderDelivered), riderID); err != nil {
+			return nil, err
+		}
 	}
 
 	// Create delivery fee earning

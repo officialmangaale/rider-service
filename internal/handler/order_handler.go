@@ -3,9 +3,11 @@ package handler
 import (
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/service"
@@ -45,28 +47,7 @@ func (h *OrderHandler) GetActiveOrder(c *gin.Context) {
 		dto.NotFound(c, "no active order")
 		return
 	}
-
-	customerName := "Customer"
-	pickupAddress := order.RestaurantAddress
-	deliveryAddress := ""
-	if order.DeliveryAddress != nil {
-		deliveryAddress = *order.DeliveryAddress
-	}
-
-	resp := dto.OrderResponse{
-		ID:              strconv.Itoa(order.OrderID),
-		AssignmentID:    "asn_789xyz",                  // Needs actual assignment if available
-		RestaurantName:  order.RestaurantName,
-		CustomerName:    customerName,
-		PickupAddress:   pickupAddress,
-		DeliveryAddress: deliveryAddress,
-		Status:          order.OrderStatus,
-		PaymentMethod:   "PREPAID", // Default or extract if available
-		CustomerPhone:   "",        // Customer phone if available
-		DistanceKm:      4.5,       // Calculate if lat/lng available
-	}
-
-	dto.Success(c, http.StatusOK, "active order", resp)
+	dto.Success(c, http.StatusOK, "active order", order)
 }
 
 // GetIncomingAssignment returns the current pending assignment offer.
@@ -233,7 +214,17 @@ func (h *OrderHandler) Delivered(c *gin.Context) {
 		return
 	}
 
-	_, err = h.orderSvc.Delivered(c.Request.Context(), orderID, userID)
+	var req dto.DeliveryProofRequest
+	if c.Request.Body != nil && c.Request.ContentLength != 0 {
+		if err := c.ShouldBindJSON(&req); err != nil {
+			dto.ValidationError(c, "Invalid delivery completion body")
+			return
+		}
+		req.Notes = strings.TrimSpace(req.Notes)
+	}
+	debug.Logf("delivered payload parsed order_id=%d has_payment_collected=%t has_notes=%t", orderID, req.PaymentCollected != nil, req.Notes != "")
+
+	_, err = h.orderSvc.Delivered(c.Request.Context(), orderID, userID, req.PaymentCollected, req.Notes)
 	if err != nil {
 		dto.Conflict(c, err.Error())
 		return

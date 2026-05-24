@@ -136,6 +136,18 @@ func (r *RiderRepository) SetAvailability(ctx context.Context, userID string, av
 	return err
 }
 
+// SetRealtimeAvailability mirrors legacy rider availability into the delivery matching table.
+func (r *RiderRepository) SetRealtimeAvailability(ctx context.Context, userID string, isOnline, isAvailable bool) error {
+	query := `INSERT INTO rider_availability (rider_id, is_online, is_available, updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (rider_id) DO UPDATE SET
+			is_online = $2,
+			is_available = $3,
+			updated_at = NOW()`
+	_, err := r.db.ExecContext(ctx, query, userID, isOnline, isAvailable)
+	return err
+}
+
 // SetOnTrip updates on_trip flag.
 func (r *RiderRepository) SetOnTrip(ctx context.Context, userID string, onTrip bool) error {
 	query := `UPDATE users SET on_trip = $2, updated_at = NOW()
@@ -164,6 +176,18 @@ func (r *RiderRepository) UpdateLocation(ctx context.Context, userID string, lat
 		return nil, false, err
 	}
 	return &lastUpdate, isAvailable, nil
+}
+
+// UpsertRealtimeLocation mirrors legacy location updates into the delivery matching table.
+func (r *RiderRepository) UpsertRealtimeLocation(ctx context.Context, userID string, lat, lng float64) error {
+	query := `INSERT INTO rider_locations (rider_id, latitude, longitude, last_updated_at)
+		VALUES ($1, $2, $3, NOW())
+		ON CONFLICT (rider_id) DO UPDATE SET
+			latitude = $2,
+			longitude = $3,
+			last_updated_at = NOW()`
+	_, err := r.db.ExecContext(ctx, query, userID, lat, lng)
+	return err
 }
 
 // IncrementDeliveryCount increments total_deliveries and adds to earnings.

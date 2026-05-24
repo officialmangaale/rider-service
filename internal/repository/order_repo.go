@@ -29,12 +29,15 @@ const orderSelectColumns = `
 	COALESCE(r.name, '') as restaurant_name,
 	COALESCE(r.street_address, '') as restaurant_address,
 	r.latitude as restaurant_lat,
-	r.longitude as restaurant_lng
+	r.longitude as restaurant_lng,
+	COALESCE(ru.business_phone, ru.phone, '') as restaurant_phone,
+	'' as customer_phone
 `
 
 const orderFromJoin = `
 	FROM orders o
 	LEFT JOIN restaurants r ON r.restaurant_id = o.restaurant_id
+	LEFT JOIN users ru ON ru.id = r.user_id
 `
 
 const activeOrderSelectColumns = `
@@ -48,7 +51,9 @@ const activeOrderSelectColumns = `
 	COALESCE(r.name, '') as restaurant_name,
 	COALESCE(r.street_address, '') as restaurant_address,
 	r.latitude as restaurant_lat,
-	r.longitude as restaurant_lng
+	r.longitude as restaurant_lng,
+	COALESCE(ru.business_phone, ru.phone, '') as restaurant_phone,
+	'' as customer_phone
 `
 
 func scanOrder(row interface{ Scan(...interface{}) error }) (*models.Order, error) {
@@ -63,6 +68,7 @@ func scanOrder(row interface{ Scan(...interface{}) error }) (*models.Order, erro
 		&o.CreatedAt, &o.UpdatedAt,
 		&o.RestaurantName, &o.RestaurantAddress,
 		&o.RestaurantLat, &o.RestaurantLng,
+		&o.RestaurantPhone, &o.CustomerPhone,
 	)
 	if err != nil {
 		return nil, err

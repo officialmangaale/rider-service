@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
@@ -66,6 +67,20 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		return nil
 	}
 
+	if evt.RestaurantName == "" || evt.RestaurantPhone == "" {
+		name, phone, err := s.deliveryRepo.GetRestaurantContact(ctx, evt.RestaurantID)
+		if err != nil {
+			log.Printf("[DELIVERY] Restaurant contact enrichment missing for restaurant %d: %v", evt.RestaurantID, err)
+		} else {
+			if evt.RestaurantName == "" {
+				evt.RestaurantName = name
+			}
+			if evt.RestaurantPhone == "" {
+				evt.RestaurantPhone = phone
+			}
+		}
+	}
+
 	// 2. Create delivery order
 	deliveryOrder, err := s.deliveryRepo.CreateDeliveryOrder(ctx, evt)
 	if err != nil {
@@ -116,24 +131,29 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		// Send WebSocket notification
 		s.hub.SendToRider(rider.RiderID, ws.WSMessage{
 			Type: "DELIVERY_ORDER_REQUEST",
-			Data: map[string]interface{}{
-				"request_id":       req.RequestID,
-				"order_id":         evt.OrderID,
-				"restaurant_id":    evt.RestaurantID,
-				"pickup_address":   evt.Pickup.Address,
-				"drop_address":     evt.Drop.Address,
-				"pickup_latitude":  evt.Pickup.Latitude,
-				"pickup_longitude": evt.Pickup.Longitude,
-				"drop_latitude":    evt.Drop.Latitude,
-				"drop_longitude":   evt.Drop.Longitude,
-				"distance_km":      rider.DistanceKm,
-				"amount":           evt.Amount,
-				"expires_at":       expiresAt.Format(time.RFC3339),
-			},
+			Data: BuildDeliveryOrderRequestPayload(req, deliveryOrder, rider.DistanceKm, expiresAt),
 		})
 	}
 
 	return nil
+}
+
+func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *models.DeliveryOrder, distanceKm float64, expiresAt time.Time) map[string]interface{} {
+	return map[string]interface{}{
+		"request_id":       req.RequestID,
+		"order_id":         order.OrderID,
+		"restaurant_id":    order.RestaurantID,
+		"restaurant_name":  order.RestaurantName,
+		"pickup_address":   order.PickupAddress,
+		"drop_address":     order.DropAddress,
+		"pickup_latitude":  order.PickupLatitude,
+		"pickup_longitude": order.PickupLongitude,
+		"drop_latitude":    order.DropLatitude,
+		"drop_longitude":   order.DropLongitude,
+		"distance_km":      distanceKm,
+		"amount":           order.Amount,
+		"expires_at":       expiresAt.Format(time.RFC3339),
+	}
 }
 
 // ProcessRiderAssignedEvent handles a RIDER_ASSIGNED_TO_ORDER event from restaurant-service.
@@ -147,6 +167,20 @@ func (s *DeliveryService) ProcessRiderAssignedEvent(ctx context.Context, evt *mo
 	if processed {
 		log.Printf("[DELIVERY] Duplicate RIDER_ASSIGNED_TO_ORDER for order %d ignored", evt.OrderID)
 		return nil
+	}
+
+	if evt.RestaurantName == "" || evt.RestaurantPhone == "" {
+		name, phone, err := s.deliveryRepo.GetRestaurantContact(ctx, evt.RestaurantID)
+		if err != nil {
+			log.Printf("[DELIVERY] Restaurant contact enrichment missing for restaurant %d: %v", evt.RestaurantID, err)
+		} else {
+			if evt.RestaurantName == "" {
+				evt.RestaurantName = name
+			}
+			if evt.RestaurantPhone == "" {
+				evt.RestaurantPhone = phone
+			}
+		}
 	}
 
 	// Upsert into delivery_orders
@@ -164,13 +198,15 @@ func (s *DeliveryService) ProcessRiderAssignedEvent(ctx context.Context, evt *mo
 	s.hub.SendToRider(evt.RiderUserID, ws.WSMessage{
 		Type: "order_assigned",
 		Data: map[string]interface{}{
-			"event_id":        eventID,
-			"order_id":        evt.OrderID,
-			"restaurant_id":   evt.RestaurantID,
+			"event_id":         eventID,
+			"order_id":         evt.OrderID,
+			"restaurant_id":    evt.RestaurantID,
 			"assignment_type":  "restaurant_owned",
 			"delivery_status":  "rider_assigned",
-			"restaurant_name":  evt.RiderName,
-			"restaurant_phone": evt.RiderPhone,
+			"restaurant_name":  evt.RestaurantName,
+			"restaurant_phone": evt.RestaurantPhone,
+			"rider_name":       evt.RiderName,
+			"rider_phone":      evt.RiderPhone,
 		},
 	})
 
@@ -178,8 +214,8 @@ func (s *DeliveryService) ProcessRiderAssignedEvent(ctx context.Context, evt *mo
 	s.hub.SendToOrder(strconv.Itoa(evt.OrderID), ws.WSMessage{
 		Type: "RIDER_ASSIGNED",
 		Data: map[string]interface{}{
-			"order_id":   evt.OrderID,
-			"rider_id":   evt.RiderUserID,
+			"order_id":    evt.OrderID,
+			"rider_id":    evt.RiderUserID,
 			"rider_name":  evt.RiderName,
 			"rider_phone": evt.RiderPhone,
 		},
@@ -254,12 +290,32 @@ func (s *DeliveryService) UpdateRiderAvailability(ctx context.Context, riderID s
 		currentOrderID = avail.CurrentOrderID
 	}
 
-	return s.deliveryRepo.UpsertRiderAvailability(ctx, riderID, isOnline, isAvailable, currentOrderID)
+	if err := s.deliveryRepo.UpsertRiderAvailability(ctx, riderID, isOnline, isAvailable, currentOrderID); err != nil {
+		return err
+	}
+	return s.riderRepo.SetAvailability(ctx, riderID, isAvailable)
 }
 
 // GetPendingRequests returns pending non-expired requests for a rider.
 func (s *DeliveryService) GetPendingRequests(ctx context.Context, riderID string) ([]*models.DeliveryOrderRequest, error) {
 	return s.deliveryRepo.GetPendingRequestsForRider(ctx, riderID)
+}
+
+func (s *DeliveryService) GetPendingRequestPayloads(ctx context.Context, riderID string) ([]map[string]interface{}, error) {
+	requests, err := s.deliveryRepo.GetPendingRequestsForRider(ctx, riderID)
+	if err != nil {
+		return nil, err
+	}
+	payloads := make([]map[string]interface{}, 0, len(requests))
+	for _, req := range requests {
+		order, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, req.DeliveryOrderID)
+		if err != nil {
+			log.Printf("[DELIVERY] Skipping request %d because delivery_order %d is missing: %v", req.RequestID, req.DeliveryOrderID, err)
+			continue
+		}
+		payloads = append(payloads, BuildDeliveryOrderRequestPayload(req, order, req.DistanceKm, req.ExpiresAt))
+	}
+	return payloads, nil
 }
 
 // AcceptRequest handles POST /riders/order-requests/{requestId}/accept with row locking.
@@ -317,6 +373,9 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 	if err := tx.Commit(); err != nil {
 		return err
 	}
+	_ = s.riderRepo.SetAvailability(ctx, riderID, false)
+	_ = s.riderRepo.SetOnTrip(ctx, riderID, true)
+	debug.Logf("accepted order persisted rider_id=%s request_id=%d order_id=%d delivery_order_id=%d", riderID, requestID, req.OrderID, req.DeliveryOrderID)
 
 	log.Printf("[DELIVERY] Rider %s accepted request %d for order %d", riderID, requestID, req.OrderID)
 
@@ -402,6 +461,7 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 	// On delivered: free the rider, but skip platform payout for restaurant-owned
 	if newStatus == models.DeliveryStatusDelivered {
 		_ = s.deliveryRepo.SetRiderFree(ctx, nil, riderID)
+		_ = s.riderRepo.SetAvailability(ctx, riderID, true)
 		_ = s.riderRepo.SetOnTrip(ctx, riderID, false)
 		log.Printf("[DELIVERY] Rider %s is now free after delivering order %d", riderID, orderID)
 

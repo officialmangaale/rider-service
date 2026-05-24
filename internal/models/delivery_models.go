@@ -55,15 +55,15 @@ const (
 
 // Delivery statuses
 const (
-	DeliveryStatusPending              = "pending"
-	DeliveryStatusRiderSearching       = "rider_searching"
-	DeliveryStatusRiderAssigned        = "rider_assigned"
+	DeliveryStatusPending                = "pending"
+	DeliveryStatusRiderSearching         = "rider_searching"
+	DeliveryStatusRiderAssigned          = "rider_assigned"
 	DeliveryStatusRiderArrivedRestaurant = "rider_arrived_restaurant"
-	DeliveryStatusPickedUp             = "picked_up"
-	DeliveryStatusOnTheWay             = "on_the_way"
-	DeliveryStatusDelivered            = "delivered"
-	DeliveryStatusNoRiderFound         = "no_rider_found"
-	DeliveryStatusCancelled            = "cancelled"
+	DeliveryStatusPickedUp               = "picked_up"
+	DeliveryStatusOnTheWay               = "on_the_way"
+	DeliveryStatusDelivered              = "delivered"
+	DeliveryStatusNoRiderFound           = "no_rider_found"
+	DeliveryStatusCancelled              = "cancelled"
 )
 
 // Allowed delivery status transitions for rider
@@ -106,10 +106,10 @@ type RiderLocation struct {
 
 // RiderAvailability represents rider's online/available status.
 type RiderAvailability struct {
-	RiderID        string `json:"rider_id"`
-	IsOnline       bool   `json:"is_online"`
-	IsAvailable    bool   `json:"is_available"`
-	CurrentOrderID *int   `json:"current_order_id"`
+	RiderID        string    `json:"rider_id"`
+	IsOnline       bool      `json:"is_online"`
+	IsAvailable    bool      `json:"is_available"`
+	CurrentOrderID *int      `json:"current_order_id"`
 	UpdatedAt      time.Time `json:"updated_at"`
 }
 
@@ -123,17 +123,21 @@ type NearbyRider struct {
 
 // OrderPlacedEvent is the SQS message payload from restaurant-service.
 type OrderPlacedEvent struct {
-	EventType  string         `json:"event_type"`
-	EventID    string         `json:"event_id"`
-	OrderID    int            `json:"order_id"`
-	RestaurantID int          `json:"restaurant_id"`
-	CustomerID int            `json:"customer_id"`
-	OrderType  string         `json:"order_type"`
-	PaymentMode string        `json:"payment_mode"`
-	Amount     float64        `json:"amount"`
-	Pickup     LocationDetail `json:"pickup"`
-	Drop       LocationDetail `json:"drop"`
-	CreatedAt  string         `json:"created_at"`
+	EventType       string         `json:"event_type"`
+	EventID         string         `json:"event_id"`
+	OrderID         int            `json:"order_id"`
+	RestaurantID    int            `json:"restaurant_id"`
+	RestaurantName  string         `json:"restaurant_name,omitempty"`
+	RestaurantPhone string         `json:"restaurant_phone,omitempty"`
+	CustomerID      int            `json:"customer_id"`
+	CustomerName    string         `json:"customer_name,omitempty"`
+	CustomerPhone   string         `json:"customer_phone,omitempty"`
+	OrderType       string         `json:"order_type"`
+	PaymentMode     string         `json:"payment_mode"`
+	Amount          float64        `json:"amount"`
+	Pickup          LocationDetail `json:"pickup"`
+	Drop            LocationDetail `json:"drop"`
+	CreatedAt       string         `json:"created_at"`
 }
 
 // LocationDetail for pickup/drop coordinates.
@@ -145,13 +149,15 @@ type LocationDetail struct {
 
 // RiderAssignedToOrderEvent is the SQS message payload when a restaurant assigns its own rider.
 type RiderAssignedToOrderEvent struct {
-	EventType    string `json:"event_type"`
-	OrderID      int    `json:"order_id"`
-	RestaurantID int    `json:"restaurant_id"`
-	RiderUserID  string `json:"rider_user_id"`
-	RiderName    string `json:"rider_name"`
-	RiderPhone   string `json:"rider_phone"`
-	AssignedAt   string `json:"assigned_at"`
+	EventType       string `json:"event_type"`
+	OrderID         int    `json:"order_id"`
+	RestaurantID    int    `json:"restaurant_id"`
+	RestaurantName  string `json:"restaurant_name,omitempty"`
+	RestaurantPhone string `json:"restaurant_phone,omitempty"`
+	RiderUserID     string `json:"rider_user_id"`
+	RiderName       string `json:"rider_name"`
+	RiderPhone      string `json:"rider_phone"`
+	AssignedAt      string `json:"assigned_at"`
 }
 
 // DeliveryTrackingResponse for GET /delivery/orders/{orderId}/tracking

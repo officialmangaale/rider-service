@@ -45,14 +45,14 @@ func (r *DeliveryRepository) MarkEventProcessed(ctx context.Context, eventID str
 func (r *DeliveryRepository) CreateDeliveryOrder(ctx context.Context, evt *models.OrderPlacedEvent) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO delivery_orders (order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assignment_type)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'rider_searching','platform')
+		`INSERT INTO delivery_orders (order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assignment_type, restaurant_name, restaurant_phone)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'rider_searching','platform',$12,$13)
 		 ON CONFLICT (order_id) DO NOTHING
 		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone`,
 		evt.OrderID, evt.RestaurantID, evt.CustomerID,
 		evt.Pickup.Latitude, evt.Pickup.Longitude, evt.Pickup.Address,
 		evt.Drop.Latitude, evt.Drop.Longitude, evt.Drop.Address,
-		evt.Amount, evt.PaymentMode,
+		evt.Amount, evt.PaymentMode, evt.RestaurantName, evt.RestaurantPhone,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
@@ -69,8 +69,8 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 	var o models.DeliveryOrder
 	// Using basic COALESCE for some fields just to ensure record exists. The real data would come from ORDER_PLACED or need to be fetched, but if assignment comes first, we minimally create it.
 	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO delivery_orders (order_id, restaurant_id, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, delivery_status, assigned_at, assigned_rider_id)
-		 VALUES ($1,$2,$3,'restaurant_owned',true,$4,$5,'rider_assigned',$6,$3)
+		`INSERT INTO delivery_orders (order_id, restaurant_id, customer_id, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, delivery_status, assigned_at, assigned_rider_id)
+		 VALUES ($1,$2,0,$3,'restaurant_owned',true,$4,$5,'rider_assigned',$6,$3)
 		 ON CONFLICT (order_id) DO UPDATE SET
 			rider_user_id = EXCLUDED.rider_user_id,
 			assignment_type = 'restaurant_owned',
@@ -82,7 +82,7 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 			assigned_rider_id = EXCLUDED.rider_user_id,
 			updated_at = NOW()
 		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone`,
-		evt.OrderID, evt.RestaurantID, evt.RiderUserID, evt.RiderName, evt.RiderPhone, evt.AssignedAt,
+		evt.OrderID, evt.RestaurantID, evt.RiderUserID, evt.RestaurantName, evt.RestaurantPhone, evt.AssignedAt,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
@@ -145,7 +145,10 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 	}
 
 	query := fmt.Sprintf(`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone
-		 FROM delivery_orders WHERE rider_user_id=$1 AND delivery_status IN (%s) ORDER BY created_at DESC`, statusArgs)
+		 FROM delivery_orders
+		 WHERE (rider_user_id=$1 OR assigned_rider_id=$1)
+		 AND delivery_status IN (%s)
+		 ORDER BY created_at DESC`, statusArgs)
 
 	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
@@ -169,6 +172,38 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 	return orders, nil
 }
 
+func (r *DeliveryRepository) GetActiveOrderForRider(ctx context.Context, riderUserID string) (*models.DeliveryOrder, error) {
+	var o models.DeliveryOrder
+	err := r.db.QueryRowContext(ctx,
+		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone
+		 FROM delivery_orders
+		 WHERE (rider_user_id=$1 OR assigned_rider_id=$1)
+		 AND delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
+		 ORDER BY COALESCE(assigned_at, updated_at, created_at) DESC
+		 LIMIT 1`, riderUserID,
+	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
+		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
+		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
+		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
+		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
+		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone)
+	if err != nil {
+		return nil, err
+	}
+	return &o, nil
+}
+
+func (r *DeliveryRepository) GetRestaurantContact(ctx context.Context, restaurantID int) (string, string, error) {
+	var name, phone string
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COALESCE(r.name, ''), COALESCE(u.business_phone, u.phone, '')
+		 FROM restaurants r
+		 LEFT JOIN users u ON u.id = r.user_id
+		 WHERE r.restaurant_id=$1`, restaurantID,
+	).Scan(&name, &phone)
+	return name, phone, err
+}
+
 func (r *DeliveryRepository) UpdateDeliveryStatus(ctx context.Context, tx *sql.Tx, deliveryOrderID int, status string) error {
 	q := `UPDATE delivery_orders SET delivery_status=$2, updated_at=NOW() WHERE delivery_order_id=$1`
 	if tx != nil {
@@ -180,7 +215,7 @@ func (r *DeliveryRepository) UpdateDeliveryStatus(ctx context.Context, tx *sql.T
 }
 
 func (r *DeliveryRepository) AssignRider(ctx context.Context, tx *sql.Tx, deliveryOrderID int, riderID string) error {
-	q := `UPDATE delivery_orders SET assigned_rider_id=$2, delivery_status='rider_assigned', assigned_at=NOW(), updated_at=NOW()
+	q := `UPDATE delivery_orders SET assigned_rider_id=$2, rider_user_id=$2, delivery_status='rider_assigned', assigned_at=NOW(), updated_at=NOW()
 	      WHERE delivery_order_id=$1 AND assigned_rider_id IS NULL`
 	var result sql.Result
 	var err error

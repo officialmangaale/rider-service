@@ -60,13 +60,13 @@ func (h *DeliveryHandler) UpdateAvailability(c *gin.Context) {
 // GetOrderRequests handles GET /riders/order-requests
 func (h *DeliveryHandler) GetOrderRequests(c *gin.Context) {
 	riderID := middleware.GetUserID(c)
-	reqs, err := h.deliverySvc.GetPendingRequests(c.Request.Context(), riderID)
+	reqs, err := h.deliverySvc.GetPendingRequestPayloads(c.Request.Context(), riderID)
 	if err != nil {
 		dto.InternalError(c, "Failed to fetch order requests")
 		return
 	}
 	if reqs == nil {
-		reqs = []*models.DeliveryOrderRequest{}
+		reqs = []map[string]interface{}{}
 	}
 	dto.Success(c, http.StatusOK, "order requests", reqs)
 }
@@ -122,9 +122,9 @@ func (h *DeliveryHandler) UpdateDeliveryStatus(c *gin.Context) {
 	// Validate allowed values
 	allowed := map[string]bool{
 		"rider_arrived_restaurant": true,
-		"picked_up":               true,
-		"on_the_way":              true,
-		"delivered":               true,
+		"picked_up":                true,
+		"on_the_way":               true,
+		"delivered":                true,
 	}
 	if !allowed[req.DeliveryStatus] {
 		dto.ValidationError(c, "Invalid delivery_status. Allowed: rider_arrived_restaurant, picked_up, on_the_way, delivered")
@@ -207,7 +207,7 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 	if o.DropLatitude != 0 && o.DropLongitude != 0 {
 		mapsURL = "https://www.google.com/maps/dir/?api=1&destination=" + strconv.FormatFloat(o.DropLatitude, 'f', -1, 64) + "," + strconv.FormatFloat(o.DropLongitude, 'f', -1, 64)
 	}
-	
+
 	assignmentType := o.AssignmentType
 	if assignmentType == "" {
 		assignmentType = "platform" // Default
@@ -236,9 +236,9 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 			Latitude:  o.PickupLatitude,
 			Longitude: o.PickupLongitude,
 		},
-		ItemsSummary:    "Items", // To fetch from order items
-		MapsURL:         mapsURL,
-		AssignmentType:  assignmentType,
-		AssignedAt:      o.AssignedAt,
+		ItemsSummary:   "Items", // To fetch from order items
+		MapsURL:        mapsURL,
+		AssignmentType: assignmentType,
+		AssignedAt:     o.AssignedAt,
 	}
 }

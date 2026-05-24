@@ -31,10 +31,11 @@ func Setup(
 	notifRepo := repository.NewNotificationRepository(db)
 	locationHistoryRepo := repository.NewLocationHistoryRepository(db)
 	statusHistoryRepo := repository.NewStatusHistoryRepository(db)
+	deliveryRepo := repository.NewDeliveryRepository(db)
 
 	// -- Services --
 	riderSvc := service.NewRiderService(riderRepo, orderRepo, earningsRepo)
-	orderSvc := service.NewOrderService(orderRepo, assignmentRepo, riderRepo, earningsRepo, statusHistoryRepo)
+	orderSvc := service.NewOrderService(orderRepo, deliveryRepo, assignmentRepo, riderRepo, earningsRepo, statusHistoryRepo)
 	locationSvc := service.NewLocationService(riderRepo, locationHistoryRepo)
 	earningsSvc := service.NewEarningsService(earningsRepo)
 	notifSvc := service.NewNotificationService(notifRepo)
@@ -51,7 +52,7 @@ func Setup(
 
 	// ==================== PUBLIC ROUTES ====================
 	r.GET("/health", healthH.Health)
-	
+
 	apiV1Public := r.Group("/api/v1")
 	apiV1Public.POST("/upload", uploadH.HandleUpload)
 

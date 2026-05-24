@@ -7,6 +7,7 @@ import (
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
 )
 
@@ -66,6 +67,7 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 		c.Set("user_id", sub)
 		c.Set("user_role", role)
 		c.Set("user_phone", phone)
+		debug.Logf("auth ok endpoint=%s %s user_id=%s role=%s", c.Request.Method, c.FullPath(), sub, role)
 
 		c.Next()
 	}
