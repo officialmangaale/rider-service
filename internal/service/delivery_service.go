@@ -144,6 +144,7 @@ func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *m
 		"order_id":         order.OrderID,
 		"restaurant_id":    order.RestaurantID,
 		"restaurant_name":  order.RestaurantName,
+		"restaurant_phone": order.RestaurantPhone,
 		"pickup_address":   order.PickupAddress,
 		"drop_address":     order.DropAddress,
 		"pickup_latitude":  order.PickupLatitude,
@@ -152,7 +153,9 @@ func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *m
 		"drop_longitude":   order.DropLongitude,
 		"distance_km":      distanceKm,
 		"amount":           order.Amount,
+		"payment_mode":     order.PaymentMode,
 		"expires_at":       expiresAt.Format(time.RFC3339),
+		"assignment_type":  order.AssignmentType,
 	}
 }
 
@@ -319,45 +322,45 @@ func (s *DeliveryService) GetPendingRequestPayloads(ctx context.Context, riderID
 }
 
 // AcceptRequest handles POST /riders/order-requests/{requestId}/accept with row locking.
-func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, riderID string) error {
+func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, riderID string) (*models.DeliveryOrder, error) {
 	tx, err := s.deliveryRepo.BeginTx(ctx)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer tx.Rollback()
 
 	// Lock the request row
 	req, err := s.deliveryRepo.GetRequestByIDForUpdate(ctx, tx, requestID)
 	if err != nil {
-		return fmt.Errorf("request not found")
+		return nil, fmt.Errorf("request not found")
 	}
 	if req.RiderID != riderID {
-		return fmt.Errorf("request does not belong to this rider")
+		return nil, fmt.Errorf("request does not belong to this rider")
 	}
 	if req.Status != models.RequestStatusPending {
-		return fmt.Errorf("request already responded to (status: %s)", req.Status)
+		return nil, fmt.Errorf("request already responded to (status: %s)", req.Status)
 	}
 	if time.Now().After(req.ExpiresAt) {
-		return fmt.Errorf("request has expired")
+		return nil, fmt.Errorf("request has expired")
 	}
 
 	// Check delivery order not already assigned
 	deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, req.DeliveryOrderID)
 	if err != nil {
-		return fmt.Errorf("delivery order not found")
+		return nil, fmt.Errorf("delivery order not found")
 	}
 	if deliveryOrder.AssignedRiderID != nil {
-		return fmt.Errorf("order already assigned to another rider")
+		return nil, fmt.Errorf("order already assigned to another rider")
 	}
 
 	// Accept the request
 	if err := s.deliveryRepo.AcceptRequest(ctx, tx, requestID); err != nil {
-		return fmt.Errorf("failed to accept: %w", err)
+		return nil, fmt.Errorf("failed to accept: %w", err)
 	}
 
 	// Assign rider to delivery order
 	if err := s.deliveryRepo.AssignRider(ctx, tx, req.DeliveryOrderID, riderID); err != nil {
-		return fmt.Errorf("failed to assign rider: %w", err)
+		return nil, fmt.Errorf("failed to assign rider: %w", err)
 	}
 
 	// Cancel other pending requests for same order
@@ -367,12 +370,18 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 
 	// Set rider busy
 	if err := s.deliveryRepo.SetRiderBusy(ctx, tx, riderID, req.OrderID); err != nil {
-		return fmt.Errorf("failed to update rider availability: %w", err)
+		return nil, fmt.Errorf("failed to update rider availability: %w", err)
 	}
 
 	if err := tx.Commit(); err != nil {
-		return err
+		return nil, err
 	}
+	assignedRiderID := riderID
+	now := time.Now()
+	deliveryOrder.AssignedRiderID = &assignedRiderID
+	deliveryOrder.RiderUserID = &assignedRiderID
+	deliveryOrder.DeliveryStatus = models.DeliveryStatusRiderAssigned
+	deliveryOrder.AssignedAt = &now
 	_ = s.riderRepo.SetAvailability(ctx, riderID, false)
 	_ = s.riderRepo.SetOnTrip(ctx, riderID, true)
 	debug.Logf("accepted order persisted rider_id=%s request_id=%d order_id=%d delivery_order_id=%d", riderID, requestID, req.OrderID, req.DeliveryOrderID)
@@ -394,7 +403,7 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 	// Callback to restaurant-service
 	s.callbackRiderAssigned(riderID, req.OrderID)
 
-	return nil
+	return deliveryOrder, nil
 }
 
 // RejectRequest handles POST /riders/order-requests/{requestId}/reject

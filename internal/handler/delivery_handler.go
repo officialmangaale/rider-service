@@ -79,11 +79,17 @@ func (h *DeliveryHandler) AcceptRequest(c *gin.Context) {
 		dto.ValidationError(c, "Invalid request ID")
 		return
 	}
-	if err := h.deliverySvc.AcceptRequest(c.Request.Context(), requestID, riderID); err != nil {
+	order, err := h.deliverySvc.AcceptRequest(c.Request.Context(), requestID, riderID)
+	if err != nil {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "Request accepted, rider assigned", nil)
+	dto.Success(c, http.StatusOK, "Request accepted, rider assigned", gin.H{
+		"request_id":        requestID,
+		"order_id":          order.OrderID,
+		"delivery_order_id": order.DeliveryOrderID,
+		"active_order":      mapDeliveryOrderToDTO(order),
+	})
 }
 
 // RejectRequest handles POST /riders/order-requests/{requestId}/reject
