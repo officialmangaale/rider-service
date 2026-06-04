@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
@@ -94,13 +95,18 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	}
 
 	// 4. Check if restaurant has its own active riders — if so, skip platform broadcast
-	hasOwnRiders, err := s.riderRepo.HasActiveRestaurantOwnRiders(ctx, evt.RestaurantID)
-	if err != nil {
-		log.Printf("[DELIVERY] Failed to check restaurant_riders for restaurant %d: %v", evt.RestaurantID, err)
-		// Fall through to platform flow on error
-	} else if hasOwnRiders {
-		log.Printf("[DELIVERY] Restaurant %d has own riders. Skipping platform rider broadcast for order %d. Waiting for RIDER_ASSIGNED_TO_ORDER event.", evt.RestaurantID, evt.OrderID)
-		return nil
+	deliveryMode := strings.ToLower(strings.TrimSpace(evt.DeliveryMode))
+	if deliveryMode == "restaurant_own_rider" || deliveryMode == "restaurant_owned" || deliveryMode == "" {
+		hasOwnRiders, err := s.riderRepo.HasActiveRestaurantOwnRiders(ctx, evt.RestaurantID)
+		if err != nil {
+			log.Printf("[DELIVERY] Failed to check restaurant_riders for restaurant %d: %v", evt.RestaurantID, err)
+			// Fall through to platform flow on error
+		} else if hasOwnRiders {
+			log.Printf("[DELIVERY] Restaurant %d has own riders. Skipping platform rider broadcast for order %d. Waiting for RIDER_ASSIGNED_TO_ORDER event.", evt.RestaurantID, evt.OrderID)
+			return nil
+		}
+	} else {
+		log.Printf("[DELIVERY] Platform dispatch requested for order %d (delivery_mode=%s)", evt.OrderID, deliveryMode)
 	}
 
 	// 5. Find nearest platform riders
@@ -448,7 +454,8 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		return fmt.Errorf("order not assigned to this rider")
 	}
 
-	if !models.IsValidDeliveryTransition(deliveryOrder.DeliveryStatus, newStatus) {
+	if !models.IsValidDeliveryTransition(deliveryOrder.DeliveryStatus, newStatus) &&
+		!isRestaurantOwnedDeliveryTransition(deliveryOrder, newStatus) {
 		return fmt.Errorf("invalid transition from '%s' to '%s'", deliveryOrder.DeliveryStatus, newStatus)
 	}
 
@@ -545,6 +552,23 @@ func (s *DeliveryService) GetDeliveryTracking(ctx context.Context, orderID int) 
 	}
 
 	return resp, nil
+}
+
+func isRestaurantOwnedDeliveryTransition(order *models.DeliveryOrder, newStatus string) bool {
+	if order == nil || !order.RestaurantOwned {
+		return false
+	}
+	switch order.DeliveryStatus {
+	case models.DeliveryStatusRiderAssigned, models.DeliveryStatusRiderArrivedRestaurant:
+		return newStatus == models.DeliveryStatusPickedUp
+	case models.DeliveryStatusPickedUp:
+		return newStatus == models.DeliveryStatusOnTheWay ||
+			newStatus == models.DeliveryStatusDelivered
+	case models.DeliveryStatusOnTheWay:
+		return newStatus == models.DeliveryStatusDelivered
+	default:
+		return false
+	}
 }
 
 func buildTimeline(do *models.DeliveryOrder) []models.DeliveryTimelineItem {

@@ -172,7 +172,7 @@ func (h *DeliveryHandler) GetRiderOrders(c *gin.Context) {
 		// Just passing a single status for now, or could split by comma
 		statuses = append(statuses, statusParam)
 	} else {
-		statuses = []string{"rider_assigned", "rider_arrived_restaurant", "picked_up", "on_the_way", "delivered"}
+		statuses = []string{"rider_assigned", "rider_arrived_restaurant", "picked_up", "on_the_way"}
 	}
 
 	orders, err := h.deliverySvc.GetRiderOrders(c.Request.Context(), riderID, statuses)

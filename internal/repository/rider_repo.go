@@ -246,7 +246,17 @@ func (r *RiderRepository) GetRestaurantsForRider(ctx context.Context, riderUserI
 
 // HasActiveRestaurantOwnRiders checks if a restaurant has active restaurant-owned riders.
 func (r *RiderRepository) HasActiveRestaurantOwnRiders(ctx context.Context, restaurantID int) (bool, error) {
-	query := `SELECT EXISTS(SELECT 1 FROM restaurant_riders rr JOIN users u ON rr.rider_user_id = u.id WHERE rr.restaurant_id = $1 AND rr.is_active = true AND u.is_available = true)`
+	query := `SELECT EXISTS(
+		SELECT 1
+		FROM restaurant_riders rr
+		JOIN users u ON rr.rider_user_id = u.id
+		WHERE rr.restaurant_id = $1
+		  AND rr.is_active = true
+		  AND COALESCE(rr.status, 'active') = 'active'
+		  AND COALESCE(u.is_available, false) = true
+		  AND COALESCE(u.on_trip, false) = false
+		  AND COALESCE(u.status, 'active') = 'active'
+	)`
 	var exists bool
 	err := r.db.QueryRowContext(ctx, query, restaurantID).Scan(&exists)
 	if err != nil {

@@ -1,6 +1,11 @@
 package models
 
-import "time"
+import (
+	"encoding/json"
+	"strconv"
+	"strings"
+	"time"
+)
 
 // DeliveryOrder represents a rider-service-owned delivery order
 // created from ORDER_PLACED SQS events.
@@ -121,23 +126,54 @@ type NearbyRider struct {
 	DistanceKm float64 `json:"distance_km"`
 }
 
+// FlexibleCustomerID accepts both legacy numeric customer IDs and the UUID/text
+// IDs emitted by restaurant-service customer-web orders.
+type FlexibleCustomerID int
+
+func (id *FlexibleCustomerID) UnmarshalJSON(data []byte) error {
+	raw := strings.TrimSpace(string(data))
+	if raw == "" || raw == "null" {
+		*id = 0
+		return nil
+	}
+	if strings.HasPrefix(raw, "\"") {
+		var text string
+		if err := json.Unmarshal(data, &text); err != nil {
+			return err
+		}
+		raw = strings.TrimSpace(text)
+	}
+	parsed, err := strconv.Atoi(raw)
+	if err != nil {
+		*id = 0
+		return nil
+	}
+	*id = FlexibleCustomerID(parsed)
+	return nil
+}
+
+func (id FlexibleCustomerID) Int() int {
+	return int(id)
+}
+
 // OrderPlacedEvent is the SQS message payload from restaurant-service.
 type OrderPlacedEvent struct {
-	EventType       string         `json:"event_type"`
-	EventID         string         `json:"event_id"`
-	OrderID         int            `json:"order_id"`
-	RestaurantID    int            `json:"restaurant_id"`
-	RestaurantName  string         `json:"restaurant_name,omitempty"`
-	RestaurantPhone string         `json:"restaurant_phone,omitempty"`
-	CustomerID      int            `json:"customer_id"`
-	CustomerName    string         `json:"customer_name,omitempty"`
-	CustomerPhone   string         `json:"customer_phone,omitempty"`
-	OrderType       string         `json:"order_type"`
-	PaymentMode     string         `json:"payment_mode"`
-	Amount          float64        `json:"amount"`
-	Pickup          LocationDetail `json:"pickup"`
-	Drop            LocationDetail `json:"drop"`
-	CreatedAt       string         `json:"created_at"`
+	EventType       string             `json:"event_type"`
+	EventID         string             `json:"event_id"`
+	OrderID         int                `json:"order_id"`
+	RestaurantID    int                `json:"restaurant_id"`
+	RestaurantName  string             `json:"restaurant_name,omitempty"`
+	RestaurantPhone string             `json:"restaurant_phone,omitempty"`
+	CustomerID      FlexibleCustomerID `json:"customer_id"`
+	CustomerName    string             `json:"customer_name,omitempty"`
+	CustomerPhone   string             `json:"customer_phone,omitempty"`
+	OrderType       string             `json:"order_type"`
+	DeliveryMode    string             `json:"delivery_mode,omitempty"`
+	PaymentMode     string             `json:"payment_mode"`
+	Amount          float64            `json:"amount"`
+	Pickup          LocationDetail     `json:"pickup"`
+	Drop            LocationDetail     `json:"drop"`
+	CreatedAt       string             `json:"created_at"`
 }
 
 // LocationDetail for pickup/drop coordinates.
