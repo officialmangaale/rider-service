@@ -30,13 +30,19 @@ func (h *EarningsHandler) GetSummary(c *gin.Context) {
 	}
 
 	resp := dto.EarningsSummaryResponse{
-		TodayEarnings:   summary.TodayEarnings,
-		WeeklyEarnings:  summary.WeekEarnings,
-		MonthlyEarnings: summary.MonthEarnings,
-		TotalEarnings:   summary.MonthEarnings, // Mocked for now
-		WalletBalance:   summary.TodayEarnings, // Mocked for now
-		PendingPayout:   0.0,                   // Mocked for now
-		SettledPayout:   summary.MonthEarnings, // Mocked for now
+		TodayEarnings:     summary.TodayEarnings,
+		WeeklyEarnings:    summary.WeekEarnings,
+		MonthlyEarnings:   summary.MonthEarnings,
+		TotalEarnings:     summary.TotalEarnings,
+		WalletBalance:     0.0,
+		PendingPayout:     0.0,
+		SettledPayout:     0.0,
+		CompletedOrders:   summary.TotalOrders,
+		DeliveryEarnings:  summary.DeliveryEarnings,
+		TipEarnings:       summary.TipEarnings,
+		IncentiveEarnings: summary.IncentiveEarnings,
+		BonusEarnings:     summary.BonusEarnings,
+		PenaltyAmount:     summary.PenaltyAmount,
 	}
 
 	dto.Success(c, http.StatusOK, "earnings summary", resp)

@@ -33,14 +33,22 @@ func (r *EarningsRepository) Create(ctx context.Context, tx *sql.Tx, riderID str
 func (r *EarningsRepository) GetSummary(ctx context.Context, riderID string) (*models.EarningsSummary, error) {
 	var s models.EarningsSummary
 	query := `SELECT
-		COALESCE(SUM(CASE WHEN created_at >= CURRENT_DATE THEN amount ELSE 0 END), 0) as today_earnings,
-		COALESCE(SUM(CASE WHEN created_at >= date_trunc('week', CURRENT_DATE) THEN amount ELSE 0 END), 0) as week_earnings,
-		COALESCE(SUM(CASE WHEN created_at >= date_trunc('month', CURRENT_DATE) THEN amount ELSE 0 END), 0) as month_earnings,
-		COUNT(DISTINCT order_id) as total_orders
+		COALESCE(SUM(CASE WHEN created_at >= CURRENT_DATE AND amount > 0 THEN amount ELSE 0 END), 0) as today_earnings,
+		COALESCE(SUM(CASE WHEN created_at >= date_trunc('week', CURRENT_DATE) AND amount > 0 THEN amount ELSE 0 END), 0) as week_earnings,
+		COALESCE(SUM(CASE WHEN created_at >= date_trunc('month', CURRENT_DATE) AND amount > 0 THEN amount ELSE 0 END), 0) as month_earnings,
+		COALESCE(SUM(CASE WHEN amount > 0 THEN amount ELSE 0 END), 0) as total_earnings,
+		COUNT(DISTINCT CASE WHEN amount > 0 THEN order_id END) as total_orders,
+		COALESCE(SUM(CASE WHEN type = 'delivery_fee' AND amount > 0 THEN amount ELSE 0 END), 0) as delivery_earnings,
+		COALESCE(SUM(CASE WHEN type = 'tip' AND amount > 0 THEN amount ELSE 0 END), 0) as tip_earnings,
+		COALESCE(SUM(CASE WHEN type = 'incentive' AND amount > 0 THEN amount ELSE 0 END), 0) as incentive_earnings,
+		COALESCE(SUM(CASE WHEN type = 'bonus' AND amount > 0 THEN amount ELSE 0 END), 0) as bonus_earnings,
+		COALESCE(SUM(CASE WHEN type = 'penalty' THEN ABS(amount) ELSE 0 END), 0) as penalty_amount
 		FROM rider_earnings
-		WHERE rider_id = $1 AND amount > 0`
+		WHERE rider_id = $1`
 	err := r.db.QueryRowContext(ctx, query, riderID).Scan(
-		&s.TodayEarnings, &s.WeekEarnings, &s.MonthEarnings, &s.TotalOrders,
+		&s.TodayEarnings, &s.WeekEarnings, &s.MonthEarnings, &s.TotalEarnings,
+		&s.TotalOrders, &s.DeliveryEarnings, &s.TipEarnings, &s.IncentiveEarnings,
+		&s.BonusEarnings, &s.PenaltyAmount,
 	)
 	if err != nil {
 		return nil, err

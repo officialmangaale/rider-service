@@ -166,10 +166,16 @@ type DeliveryStatusHistory struct {
 
 // EarningsSummary is a computed view for dashboard.
 type EarningsSummary struct {
-	TodayEarnings float64 `json:"today_earnings"`
-	WeekEarnings  float64 `json:"week_earnings"`
-	MonthEarnings float64 `json:"month_earnings"`
-	TotalOrders   int     `json:"total_orders"`
+	TodayEarnings     float64 `json:"today_earnings"`
+	WeekEarnings      float64 `json:"week_earnings"`
+	MonthEarnings     float64 `json:"month_earnings"`
+	TotalEarnings     float64 `json:"total_earnings"`
+	TotalOrders       int     `json:"total_orders"`
+	DeliveryEarnings  float64 `json:"delivery_earnings"`
+	TipEarnings       float64 `json:"tip_earnings"`
+	IncentiveEarnings float64 `json:"incentive_earnings"`
+	BonusEarnings     float64 `json:"bonus_earnings"`
+	PenaltyAmount     float64 `json:"penalty_amount"`
 }
 
 // DashboardData for the rider home screen.

@@ -245,11 +245,17 @@ type PickupAddressInfo struct {
 
 // EarningsSummaryResponse for GET /api/v1/earnings/summary
 type EarningsSummaryResponse struct {
-	TodayEarnings   float64 `json:"today_earnings"`
-	WeeklyEarnings  float64 `json:"weekly_earnings"`
-	MonthlyEarnings float64 `json:"monthly_earnings"`
-	TotalEarnings   float64 `json:"total_earnings"`
-	WalletBalance   float64 `json:"wallet_balance"`
-	PendingPayout   float64 `json:"pending_payout"`
-	SettledPayout   float64 `json:"settled_payout"`
+	TodayEarnings     float64 `json:"today_earnings"`
+	WeeklyEarnings    float64 `json:"weekly_earnings"`
+	MonthlyEarnings   float64 `json:"monthly_earnings"`
+	TotalEarnings     float64 `json:"total_earnings"`
+	WalletBalance     float64 `json:"wallet_balance"`
+	PendingPayout     float64 `json:"pending_payout"`
+	SettledPayout     float64 `json:"settled_payout"`
+	CompletedOrders   int     `json:"completed_orders"`
+	DeliveryEarnings  float64 `json:"delivery_earnings"`
+	TipEarnings       float64 `json:"tip_earnings"`
+	IncentiveEarnings float64 `json:"incentive_earnings"`
+	BonusEarnings     float64 `json:"bonus_earnings"`
+	PenaltyAmount     float64 `json:"penalty_amount"`
 }

@@ -145,7 +145,14 @@ func (h *DeliveryHandler) UpdateDeliveryStatus(c *gin.Context) {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	dto.Success(c, http.StatusOK, "Delivery status updated", nil)
+	updated, err := h.deliverySvc.GetRiderOrderDetail(c.Request.Context(), orderID, riderID)
+	if err != nil {
+		dto.Success(c, http.StatusOK, "Delivery status updated", nil)
+		return
+	}
+	dto.Success(c, http.StatusOK, "Delivery status updated", gin.H{
+		"order": mapDeliveryOrderToDTO(updated),
+	})
 }
 
 // GetDeliveryTracking handles GET /delivery/orders/{orderId}/tracking
