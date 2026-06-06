@@ -125,13 +125,9 @@ func (c *SQSConsumer) processMessage(msg types.Message) error {
 	}
 
 	bodyStr := *msg.Body
-	
-	// Check if this is an SNS-wrapped message
-	if strings.Contains(bodyStr, `"Type" : "Notification"`) && strings.Contains(bodyStr, `"Message" :`) {
-		var snsMsg snsMessage
-		if err := json.Unmarshal([]byte(bodyStr), &snsMsg); err == nil {
-			bodyStr = snsMsg.Message
-		}
+
+	if unwrapped, ok := unwrapSNSMessage(bodyStr); ok {
+		bodyStr = unwrapped
 	}
 
 	var baseEvt struct {
@@ -142,7 +138,8 @@ func (c *SQSConsumer) processMessage(msg types.Message) error {
 		return nil
 	}
 
-	if baseEvt.EventType == "RIDER_ASSIGNED_TO_ORDER" {
+	eventType := strings.ToUpper(strings.TrimSpace(baseEvt.EventType))
+	if eventType == "RIDER_ASSIGNED_TO_ORDER" {
 		var evt models.RiderAssignedToOrderEvent
 		if err := json.Unmarshal([]byte(bodyStr), &evt); err != nil {
 			log.Printf("[SQS] Ignoring invalid JSON message %s: %v", *msg.MessageId, err)
@@ -154,6 +151,8 @@ func (c *SQSConsumer) processMessage(msg types.Message) error {
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		log.Printf("[SQS] Consumed RIDER_ASSIGNED_TO_ORDER order_id=%d restaurant_id=%d rider_id=%s",
+			evt.OrderID, evt.RestaurantID, evt.RiderUserID)
 		return c.deliverySvc.ProcessRiderAssignedEvent(ctx, &evt)
 	}
 
@@ -164,8 +163,8 @@ func (c *SQSConsumer) processMessage(msg types.Message) error {
 		return nil
 	}
 
-	if evt.EventType == "ORDER_PLACED" {
-		if strings.ToLower(evt.OrderType) != "delivery" {
+	if eventType == "ORDER_PLACED" {
+		if !isDeliveryOrderType(evt.OrderType) {
 			log.Printf("[SQS] Ignoring non-delivery order: %d (%s)", evt.OrderID, evt.OrderType)
 			return nil
 		}
@@ -177,8 +176,30 @@ func (c *SQSConsumer) processMessage(msg types.Message) error {
 
 		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
+		evt.EventType = eventType
+		evt.OrderType = "delivery"
+		log.Printf("[SQS] Consumed ORDER_PLACED order_id=%d restaurant_id=%d order_type=%s delivery_mode=%s",
+			evt.OrderID, evt.RestaurantID, evt.OrderType, evt.DeliveryMode)
 		return c.deliverySvc.ProcessOrderPlacedEvent(ctx, &evt)
 	}
 
 	return nil
+}
+
+func isDeliveryOrderType(orderType string) bool {
+	return strings.EqualFold(strings.TrimSpace(orderType), "delivery")
+}
+
+func unwrapSNSMessage(body string) (string, bool) {
+	var envelope struct {
+		Type    string `json:"Type"`
+		Message string `json:"Message"`
+	}
+	if err := json.Unmarshal([]byte(body), &envelope); err != nil {
+		return body, false
+	}
+	if strings.TrimSpace(envelope.Message) == "" {
+		return body, false
+	}
+	return envelope.Message, true
 }

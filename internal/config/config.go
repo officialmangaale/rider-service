@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"strconv"
+	"strings"
 )
 
 // Config holds all service configuration from environment variables.
@@ -15,15 +16,15 @@ type Config struct {
 
 	// SQS Consumer
 	SQSOrdersQueueURL string
-	AWSRegion          string
+	AWSRegion         string
 
 	// Internal service communication
 	RestaurantServiceBaseURL string
 	InternalServiceToken     string
 
 	// Delivery config
-	SearchRadiusKm    float64
-	MaxRidersToNotify int
+	SearchRadiusKm       float64
+	MaxRidersToNotify    int
 	RequestExpirySeconds int
 }
 
@@ -36,8 +37,8 @@ func Load() (*Config, error) {
 		JWTExpiryHours: getEnvInt("JWT_EXPIRY_HOURS", 24),
 
 		// SQS
-		SQSOrdersQueueURL: os.Getenv("SQS_ORDERS_QUEUE_URL"),
-		AWSRegion:          getEnv("AWS_REGION", "ap-south-1"),
+		SQSOrdersQueueURL: firstNonEmptyEnv("SQS_ORDERS_QUEUE_URL", "SQS_RIDER_QUEUE_URL"),
+		AWSRegion:         getEnv("AWS_REGION", "ap-south-1"),
 
 		// Internal
 		RestaurantServiceBaseURL: os.Getenv("RESTAURANT_SERVICE_INTERNAL_BASE_URL"),
@@ -57,6 +58,15 @@ func Load() (*Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func firstNonEmptyEnv(keys ...string) string {
+	for _, key := range keys {
+		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func getEnv(key, fallback string) string {

@@ -15,6 +15,14 @@ type DeliveryRepository struct {
 	db *sql.DB
 }
 
+type RiderEligibilitySummary struct {
+	OnlineRiders       int
+	AvailableRiders    int
+	RidersWithLocation int
+	RidersWithFreshGPS int
+	RidersWithinRadius int
+}
+
 func NewDeliveryRepository(db *sql.DB) *DeliveryRepository {
 	return &DeliveryRepository{db: db}
 }
@@ -297,7 +305,13 @@ func (r *DeliveryRepository) CreateRequest(ctx context.Context, deliveryOrderID,
 	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO delivery_order_requests (delivery_order_id, order_id, rider_id, distance_km, expires_at)
 		 VALUES ($1,$2,$3,$4,$5)
-		 ON CONFLICT (delivery_order_id, rider_id) DO NOTHING
+		 ON CONFLICT (delivery_order_id, rider_id) DO UPDATE SET
+			order_id = EXCLUDED.order_id,
+			distance_km = EXCLUDED.distance_km,
+			status = 'pending',
+			expires_at = EXCLUDED.expires_at,
+			updated_at = NOW()
+		 WHERE delivery_order_requests.status IN ('rejected', 'expired', 'cancelled')
 		 RETURNING request_id, delivery_order_id, order_id, rider_id, status, distance_km, expires_at, created_at, updated_at`,
 		deliveryOrderID, orderID, riderID, distanceKm, expiresAt,
 	).Scan(&req.RequestID, &req.DeliveryOrderID, &req.OrderID, &req.RiderID,
@@ -516,6 +530,61 @@ func (r *DeliveryRepository) FindNearestRiders(ctx context.Context, pickupLat, p
 		riders = append(riders, nr)
 	}
 	return riders, nil
+}
+
+func (r *DeliveryRepository) GetRiderEligibilitySummary(
+	ctx context.Context,
+	pickupLat, pickupLng, radiusKm float64,
+) (*RiderEligibilitySummary, error) {
+	const query = `
+		WITH rider_candidates AS (
+			SELECT
+				ra.is_online,
+				ra.is_available,
+				ra.current_order_id,
+				rl.rider_id IS NOT NULL AS has_location,
+				COALESCE(rl.last_updated_at >= NOW() - INTERVAL '5 minutes', false) AS has_fresh_location,
+				CASE
+					WHEN rl.rider_id IS NULL THEN NULL
+					ELSE (6371 * acos(
+						LEAST(1.0, cos(radians($1)) * cos(radians(rl.latitude))
+						* cos(radians(rl.longitude) - radians($2))
+						+ sin(radians($1)) * sin(radians(rl.latitude)))
+					))
+				END AS distance_km
+			FROM rider_availability ra
+			LEFT JOIN rider_locations rl ON rl.rider_id = ra.rider_id
+		)
+		SELECT
+			COUNT(*) FILTER (WHERE is_online),
+			COUNT(*) FILTER (
+				WHERE is_online AND is_available AND current_order_id IS NULL
+			),
+			COUNT(*) FILTER (
+				WHERE is_online AND is_available AND current_order_id IS NULL AND has_location
+			),
+			COUNT(*) FILTER (
+				WHERE is_online AND is_available AND current_order_id IS NULL
+				  AND has_location AND has_fresh_location
+			),
+			COUNT(*) FILTER (
+				WHERE is_online AND is_available AND current_order_id IS NULL
+				  AND has_location AND has_fresh_location AND distance_km <= $3
+			)
+		FROM rider_candidates`
+
+	var summary RiderEligibilitySummary
+	err := r.db.QueryRowContext(ctx, query, pickupLat, pickupLng, radiusKm).Scan(
+		&summary.OnlineRiders,
+		&summary.AvailableRiders,
+		&summary.RidersWithLocation,
+		&summary.RidersWithFreshGPS,
+		&summary.RidersWithinRadius,
+	)
+	if err != nil {
+		return nil, err
+	}
+	return &summary, nil
 }
 
 // BeginTx starts a transaction.

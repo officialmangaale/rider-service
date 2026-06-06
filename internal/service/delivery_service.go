@@ -2,6 +2,8 @@ package service
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
@@ -48,24 +50,22 @@ func NewDeliveryService(
 
 // ProcessOrderPlacedEvent handles an ORDER_PLACED SQS event end-to-end.
 func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *models.OrderPlacedEvent) error {
-	// 1. Idempotency check
+	log.Printf("[DELIVERY] Processing ORDER_PLACED order_id=%d restaurant_id=%d delivery_mode=%s",
+		evt.OrderID, evt.RestaurantID, evt.DeliveryMode)
+
+	// 1. Idempotency check. A later accepted/preparing event may safely
+	// redispatch an unassigned order after every previous offer is terminal.
+	eventProcessed := false
 	if evt.EventID != "" {
 		processed, err := s.deliveryRepo.IsEventProcessed(ctx, evt.EventID)
 		if err != nil {
 			return fmt.Errorf("idempotency check failed: %w", err)
 		}
-		if processed {
-			log.Printf("[DELIVERY] Duplicate event %s for order %d ignored", evt.EventID, evt.OrderID)
-			return nil
-		}
+		eventProcessed = processed
 	}
 	orderProcessed, err := s.deliveryRepo.IsOrderProcessed(ctx, evt.OrderID)
 	if err != nil {
 		return fmt.Errorf("order idempotency check failed: %w", err)
-	}
-	if orderProcessed {
-		log.Printf("[DELIVERY] Order %d already processed, skipping", evt.OrderID)
-		return nil
 	}
 
 	if evt.RestaurantName == "" || evt.RestaurantPhone == "" {
@@ -82,16 +82,53 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		}
 	}
 
-	// 2. Create delivery order
-	deliveryOrder, err := s.deliveryRepo.CreateDeliveryOrder(ctx, evt)
-	if err != nil {
-		return fmt.Errorf("failed to create delivery order: %w", err)
+	// 2. Create the canonical delivery order, or reopen an unassigned order
+	// whose previous rider offers have all expired/rejected.
+	var deliveryOrder *models.DeliveryOrder
+	if !orderProcessed {
+		existing, lookupErr := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, evt.OrderID)
+		switch {
+		case lookupErr == nil:
+			deliveryOrder = existing
+			orderProcessed = true
+		case errors.Is(lookupErr, sql.ErrNoRows):
+		default:
+			return fmt.Errorf("failed to check for existing delivery order: %w", lookupErr)
+		}
 	}
-	log.Printf("[DELIVERY] Delivery order created: id=%d order_id=%d", deliveryOrder.DeliveryOrderID, deliveryOrder.OrderID)
+	if eventProcessed || orderProcessed {
+		if deliveryOrder == nil {
+			deliveryOrder, err = s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, evt.OrderID)
+			if err != nil {
+				return fmt.Errorf("failed to load existing delivery order: %w", err)
+			}
+		}
+		canRedispatch, err := s.canRedispatch(ctx, deliveryOrder)
+		if err != nil {
+			return err
+		}
+		if !canRedispatch {
+			log.Printf("[DELIVERY] Order %d already processed with active or assigned delivery state, skipping", evt.OrderID)
+			return nil
+		}
+		if err := s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusRiderSearching); err != nil {
+			return fmt.Errorf("failed to reset delivery order for redispatch: %w", err)
+		}
+		deliveryOrder.DeliveryStatus = models.DeliveryStatusRiderSearching
+		log.Printf("[DELIVERY] Redispatching delivery_order=%d order_id=%d", deliveryOrder.DeliveryOrderID, evt.OrderID)
+	} else {
+		deliveryOrder, err = s.deliveryRepo.CreateDeliveryOrder(ctx, evt)
+		if err != nil {
+			return fmt.Errorf("failed to create delivery order: %w", err)
+		}
+		log.Printf("[DELIVERY] Delivery order created: id=%d order_id=%d", deliveryOrder.DeliveryOrderID, deliveryOrder.OrderID)
+	}
 
-	// 3. Mark event processed
-	if evt.EventID != "" {
-		_ = s.deliveryRepo.MarkEventProcessed(ctx, evt.EventID, evt.OrderID, evt.EventType)
+	// 3. Mark this event processed after the delivery order is durable.
+	if evt.EventID != "" && !eventProcessed {
+		if err := s.deliveryRepo.MarkEventProcessed(ctx, evt.EventID, evt.OrderID, evt.EventType); err != nil {
+			log.Printf("[DELIVERY] Failed to mark event %s processed: %v", evt.EventID, err)
+		}
 	}
 
 	// 4. Check if restaurant has its own active riders — if so, skip platform broadcast
@@ -118,7 +155,7 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	}
 
 	if len(riders) == 0 {
-		log.Printf("[DELIVERY] No riders found within %.1f km for order %d", s.searchRadiusKm, evt.OrderID)
+		s.logEligibilitySummary(ctx, evt)
 		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
 		return nil
 	}
@@ -139,9 +176,67 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 			Type: "DELIVERY_ORDER_REQUEST",
 			Data: BuildDeliveryOrderRequestPayload(req, deliveryOrder, rider.DistanceKm, expiresAt),
 		})
+		log.Printf("[DELIVERY] WebSocket request emitted rider_id=%s request_id=%d connected=%t",
+			rider.RiderID, req.RequestID, s.hub.IsRiderConnected(rider.RiderID))
 	}
 
 	return nil
+}
+
+func (s *DeliveryService) canRedispatch(ctx context.Context, order *models.DeliveryOrder) (bool, error) {
+	if order.RestaurantOwned || nonEmptyString(order.AssignedRiderID) || nonEmptyString(order.RiderUserID) {
+		return false, nil
+	}
+	switch order.DeliveryStatus {
+	case models.DeliveryStatusRiderAssigned,
+		models.DeliveryStatusRiderArrivedRestaurant,
+		models.DeliveryStatusPickedUp,
+		models.DeliveryStatusOnTheWay,
+		models.DeliveryStatusDelivered,
+		models.DeliveryStatusCancelled:
+		return false, nil
+	}
+
+	hasAccepted, err := s.deliveryRepo.HasAcceptedRequest(ctx, order.DeliveryOrderID)
+	if err != nil {
+		return false, fmt.Errorf("failed to check accepted rider requests: %w", err)
+	}
+	if hasAccepted {
+		return false, nil
+	}
+	pending, err := s.deliveryRepo.CountPendingForOrder(ctx, order.DeliveryOrderID)
+	if err != nil {
+		return false, fmt.Errorf("failed to count pending rider requests: %w", err)
+	}
+	return pending == 0, nil
+}
+
+func nonEmptyString(value *string) bool {
+	return value != nil && strings.TrimSpace(*value) != ""
+}
+
+func (s *DeliveryService) logEligibilitySummary(ctx context.Context, evt *models.OrderPlacedEvent) {
+	summary, err := s.deliveryRepo.GetRiderEligibilitySummary(
+		ctx,
+		evt.Pickup.Latitude,
+		evt.Pickup.Longitude,
+		s.searchRadiusKm,
+	)
+	if err != nil {
+		log.Printf("[DELIVERY] No riders found within %.1f km for order %d; eligibility diagnostics failed: %v",
+			s.searchRadiusKm, evt.OrderID, err)
+		return
+	}
+	log.Printf(
+		"[DELIVERY] No eligible riders for order %d radius_km=%.1f online=%d available=%d with_location=%d fresh_location=%d within_radius=%d",
+		evt.OrderID,
+		s.searchRadiusKm,
+		summary.OnlineRiders,
+		summary.AvailableRiders,
+		summary.RidersWithLocation,
+		summary.RidersWithFreshGPS,
+		summary.RidersWithinRadius,
+	)
 }
 
 func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *models.DeliveryOrder, distanceKm float64, expiresAt time.Time) map[string]interface{} {

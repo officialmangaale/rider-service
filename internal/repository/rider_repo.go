@@ -226,7 +226,11 @@ func (r *RiderRepository) GetCurrentLocation(ctx context.Context, userID string)
 
 // GetRestaurantsForRider fetches linked restaurants for a rider.
 func (r *RiderRepository) GetRestaurantsForRider(ctx context.Context, riderUserID string) ([]models.LinkedRestaurant, error) {
-	query := `SELECT restaurant_id, restaurant_name, status FROM restaurant_riders WHERE rider_user_id = $1`
+	query := `SELECT restaurant_id, restaurant_name, status
+		FROM restaurant_riders
+		WHERE rider_user_id = $1
+		  AND is_active = true
+		  AND COALESCE(status, 'active') = 'active'`
 	rows, err := r.db.QueryContext(ctx, query, riderUserID)
 	if err != nil {
 		return nil, err
