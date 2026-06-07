@@ -220,6 +220,7 @@ type RiderDeliveryOrderResponse struct {
 	ItemsSummary    string               `json:"items_summary"`
 	MapsURL         string               `json:"maps_url"`
 	AssignmentType  string               `json:"assignment_type"`
+	RestaurantOwned bool                 `json:"restaurant_owned"`
 	AssignedAt      *time.Time           `json:"assigned_at,omitempty"`
 }
 

@@ -252,6 +252,7 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 		ItemsSummary:   "Items", // To fetch from order items
 		MapsURL:        mapsURL,
 		AssignmentType: assignmentType,
+		RestaurantOwned: o.RestaurantOwned,
 		AssignedAt:     o.AssignedAt,
 	}
 }
