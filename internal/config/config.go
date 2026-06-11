@@ -11,6 +11,7 @@ import (
 type Config struct {
 	Port           string
 	DatabaseURL    string
+	RedisURL       string
 	JWTSecret      string // Shared secret with user-service for JWT verification
 	JWTExpiryHours int    // Not used for issuance, only for reference
 
@@ -33,6 +34,7 @@ func Load() (*Config, error) {
 	cfg := &Config{
 		Port:           getEnv("PORT", "8084"),
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
+		RedisURL:       os.Getenv("REDIS_URL"),
 		JWTSecret:      os.Getenv("JWT_SECRET"),
 		JWTExpiryHours: getEnvInt("JWT_EXPIRY_HOURS", 24),
 

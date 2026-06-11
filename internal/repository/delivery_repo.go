@@ -55,7 +55,17 @@ func (r *DeliveryRepository) CreateDeliveryOrder(ctx context.Context, evt *model
 	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO delivery_orders (order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assignment_type, restaurant_name, restaurant_phone)
 		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'rider_searching','platform',$12,$13)
-		 ON CONFLICT (order_id) DO NOTHING
+		 ON CONFLICT (order_id) DO UPDATE SET
+			restaurant_name = COALESCE(NULLIF(delivery_orders.restaurant_name, ''), EXCLUDED.restaurant_name),
+			restaurant_phone = COALESCE(NULLIF(delivery_orders.restaurant_phone, ''), EXCLUDED.restaurant_phone),
+			pickup_latitude = CASE WHEN delivery_orders.pickup_latitude = 0 THEN EXCLUDED.pickup_latitude ELSE delivery_orders.pickup_latitude END,
+			pickup_longitude = CASE WHEN delivery_orders.pickup_longitude = 0 THEN EXCLUDED.pickup_longitude ELSE delivery_orders.pickup_longitude END,
+			pickup_address = COALESCE(NULLIF(delivery_orders.pickup_address, ''), EXCLUDED.pickup_address),
+			drop_latitude = CASE WHEN delivery_orders.drop_latitude = 0 THEN EXCLUDED.drop_latitude ELSE delivery_orders.drop_latitude END,
+			drop_longitude = CASE WHEN delivery_orders.drop_longitude = 0 THEN EXCLUDED.drop_longitude ELSE delivery_orders.drop_longitude END,
+			drop_address = COALESCE(NULLIF(delivery_orders.drop_address, ''), EXCLUDED.drop_address),
+			amount = CASE WHEN delivery_orders.amount = 0 THEN EXCLUDED.amount ELSE delivery_orders.amount END,
+			payment_mode = COALESCE(NULLIF(delivery_orders.payment_mode, ''), EXCLUDED.payment_mode)
 		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone`,
 		evt.OrderID, evt.RestaurantID, evt.CustomerID.Int(),
 		evt.Pickup.Latitude, evt.Pickup.Longitude, evt.Pickup.Address,

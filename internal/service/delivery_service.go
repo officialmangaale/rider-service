@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	dispatchcache "github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/cache"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
@@ -23,6 +24,7 @@ type DeliveryService struct {
 	riderRepo      *repository.RiderRepository
 	hub            *ws.Hub
 	restaurantCli  *client.RestaurantClient
+	dispatchCache  *dispatchcache.RedisDispatchCache
 	searchRadiusKm float64
 	maxRiders      int
 	requestExpiry  time.Duration
@@ -36,12 +38,14 @@ func NewDeliveryService(
 	searchRadiusKm float64,
 	maxRiders int,
 	requestExpirySec int,
+	dispatchCache *dispatchcache.RedisDispatchCache,
 ) *DeliveryService {
 	return &DeliveryService{
 		deliveryRepo:   deliveryRepo,
 		riderRepo:      riderRepo,
 		hub:            hub,
 		restaurantCli:  restaurantCli,
+		dispatchCache:  dispatchCache,
 		searchRadiusKm: searchRadiusKm,
 		maxRiders:      maxRiders,
 		requestExpiry:  time.Duration(requestExpirySec) * time.Second,
@@ -50,6 +54,9 @@ func NewDeliveryService(
 
 // ProcessOrderPlacedEvent handles an ORDER_PLACED SQS event end-to-end.
 func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *models.OrderPlacedEvent) error {
+	if err := canonicalizeOrderPlacedEvent(evt); err != nil {
+		return err
+	}
 	log.Printf("[DELIVERY] Processing ORDER_PLACED order_id=%d restaurant_id=%d delivery_mode=%s",
 		evt.OrderID, evt.RestaurantID, evt.DeliveryMode)
 
@@ -146,17 +153,43 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		log.Printf("[DELIVERY] Platform dispatch requested for order %d (delivery_mode=%s)", evt.OrderID, deliveryMode)
 	}
 
-	// 5. Find nearest platform riders
-	riders, err := s.deliveryRepo.FindNearestRiders(ctx, evt.Pickup.Latitude, evt.Pickup.Longitude, s.searchRadiusKm, s.maxRiders)
-	if err != nil {
-		log.Printf("[DELIVERY] Nearest rider search failed for order %d: %v", evt.OrderID, err)
-		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
-		return nil // don't crash consumer
+	// 5. Find nearest platform riders. Redis GEO is the fast path; SQL remains
+	// the durable fallback while Redis warms up or if it is unavailable.
+	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+		if err := s.dispatchCache.SetPendingOrder(ctx, evt.OrderID, s.requestExpiry); err != nil {
+			log.Printf("[DELIVERY] Redis pending order TTL failed order_id=%d err=%v", evt.OrderID, err)
+		}
+	}
+	var riders []models.NearbyRider
+	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+		redisRiders, redisErr := s.dispatchCache.FindNearestRiders(ctx, evt.Pickup.Latitude, evt.Pickup.Longitude, s.searchRadiusKm, s.maxRiders)
+		if redisErr != nil {
+			log.Printf("[DELIVERY] Redis GEO search failed order_id=%d radius_km=%.1f err=%v; falling back to SQL", evt.OrderID, s.searchRadiusKm, redisErr)
+		} else if len(redisRiders) > 0 {
+			riders = redisRiders
+			log.Printf("[DELIVERY] Redis GEO selected %d riders for order %d radius_km=%.1f", len(riders), evt.OrderID, s.searchRadiusKm)
+		} else {
+			log.Printf("[DELIVERY] Redis GEO found no eligible riders for order %d radius_km=%.1f; falling back to SQL", evt.OrderID, s.searchRadiusKm)
+		}
+	}
+	if len(riders) == 0 {
+		riders, err = s.deliveryRepo.FindNearestRiders(ctx, evt.Pickup.Latitude, evt.Pickup.Longitude, s.searchRadiusKm, s.maxRiders)
+		if err != nil {
+			log.Printf("[DELIVERY] Nearest rider search failed for order %d: %v", evt.OrderID, err)
+			_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
+			if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+				s.dispatchCache.ClearPendingOrder(ctx, evt.OrderID)
+			}
+			return nil // don't crash consumer
+		}
 	}
 
 	if len(riders) == 0 {
 		s.logEligibilitySummary(ctx, evt)
 		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
+		if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+			s.dispatchCache.ClearPendingOrder(ctx, evt.OrderID)
+		}
 		return nil
 	}
 	log.Printf("[DELIVERY] Found %d nearby riders for order %d", len(riders), evt.OrderID)
@@ -180,6 +213,23 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 			rider.RiderID, req.RequestID, s.hub.IsRiderConnected(rider.RiderID))
 	}
 
+	return nil
+}
+
+func canonicalizeOrderPlacedEvent(evt *models.OrderPlacedEvent) error {
+	if evt == nil {
+		return errors.New("nil ORDER_PLACED event")
+	}
+	evt.EventType = strings.ToUpper(strings.TrimSpace(evt.EventType))
+	if evt.EventType == "" {
+		evt.EventType = "ORDER_PLACED"
+	}
+	evt.EventID = strings.TrimSpace(evt.EventID)
+	if evt.EventType == "ORDER_PLACED" && evt.OrderID > 0 {
+		evt.EventID = fmt.Sprintf("%s:%d", evt.EventType, evt.OrderID)
+	} else if evt.EventID == "" && evt.OrderID > 0 {
+		evt.EventID = fmt.Sprintf("%s:%d", evt.EventType, evt.OrderID)
+	}
 	return nil
 }
 
@@ -359,6 +409,11 @@ func (s *DeliveryService) UpdateRiderLocation(ctx context.Context, riderID strin
 	if err := s.deliveryRepo.UpsertRiderLocation(ctx, riderID, lat, lng); err != nil {
 		return err
 	}
+	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+		if err := s.dispatchCache.UpdateRiderLocation(ctx, riderID, lat, lng); err != nil {
+			log.Printf("[DELIVERY] Redis rider location update failed rider_id=%s err=%v", riderID, err)
+		}
+	}
 
 	// Check if rider has active order → broadcast to customer
 	avail, err := s.deliveryRepo.GetRiderAvailability(ctx, riderID)
@@ -397,7 +452,15 @@ func (s *DeliveryService) UpdateRiderAvailability(ctx context.Context, riderID s
 	if err := s.deliveryRepo.UpsertRiderAvailability(ctx, riderID, isOnline, isAvailable, currentOrderID); err != nil {
 		return err
 	}
-	return s.riderRepo.SetAvailability(ctx, riderID, isAvailable)
+	if err := s.riderRepo.SetAvailability(ctx, riderID, isAvailable); err != nil {
+		return err
+	}
+	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+		if err := s.dispatchCache.UpdateRiderAvailability(ctx, riderID, isOnline, isAvailable, currentOrderID); err != nil {
+			log.Printf("[DELIVERY] Redis rider availability update failed rider_id=%s err=%v", riderID, err)
+		}
+	}
+	return nil
 }
 
 // GetPendingRequests returns pending non-expired requests for a rider.
@@ -445,6 +508,26 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 		return nil, fmt.Errorf("request has expired")
 	}
 
+	redisLockAcquired := false
+	commitSucceeded := false
+	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+		accepted, lockErr := s.dispatchCache.TryAcceptOrder(ctx, req.OrderID, riderID, 24*time.Hour)
+		if lockErr != nil {
+			log.Printf("[DELIVERY] Redis acceptance lock failed order_id=%d rider_id=%s err=%v; continuing with SQL lock", req.OrderID, riderID, lockErr)
+		} else if !accepted {
+			log.Printf("[DELIVERY] Redis acceptance lock rejected duplicate accept order_id=%d rider_id=%s", req.OrderID, riderID)
+			return nil, fmt.Errorf("order already assigned to another rider")
+		} else {
+			redisLockAcquired = true
+			log.Printf("[DELIVERY] Redis acceptance lock acquired order_id=%d rider_id=%s", req.OrderID, riderID)
+			defer func() {
+				if !commitSucceeded {
+					s.dispatchCache.ReleaseOrderLock(context.Background(), req.OrderID, riderID)
+				}
+			}()
+		}
+	}
+
 	// Check delivery order not already assigned
 	deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, req.DeliveryOrderID)
 	if err != nil {
@@ -476,6 +559,10 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 
 	if err := tx.Commit(); err != nil {
 		return nil, err
+	}
+	commitSucceeded = true
+	if redisLockAcquired && s.dispatchCache != nil && s.dispatchCache.Enabled() {
+		s.dispatchCache.MarkOrderAssigned(context.Background(), req.OrderID)
 	}
 	assignedRiderID := riderID
 	now := time.Now()
@@ -574,6 +661,11 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		_ = s.deliveryRepo.SetRiderFree(ctx, nil, riderID)
 		_ = s.riderRepo.SetAvailability(ctx, riderID, true)
 		_ = s.riderRepo.SetOnTrip(ctx, riderID, false)
+		if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+			if err := s.dispatchCache.UpdateRiderAvailability(ctx, riderID, true, true, nil); err != nil {
+				log.Printf("[DELIVERY] Redis rider free update failed rider_id=%s order_id=%d err=%v", riderID, orderID, err)
+			}
+		}
 		log.Printf("[DELIVERY] Rider %s is now free after delivering order %d", riderID, orderID)
 
 		if isRestaurantOwned {
@@ -746,6 +838,12 @@ func (s *DeliveryService) checkAllRequestsDone(ctx context.Context, deliveryOrde
 		hasAccepted, _ := s.deliveryRepo.HasAcceptedRequest(ctx, deliveryOrderID)
 		if !hasAccepted {
 			_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrderID, models.DeliveryStatusNoRiderFound)
+			if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+				deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, deliveryOrderID)
+				if err == nil && deliveryOrder != nil {
+					s.dispatchCache.ClearPendingOrder(ctx, deliveryOrder.OrderID)
+				}
+			}
 			log.Printf("[DELIVERY] All requests rejected/expired for delivery_order %d, marked no_rider_found", deliveryOrderID)
 		}
 	}

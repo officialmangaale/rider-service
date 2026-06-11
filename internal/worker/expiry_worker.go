@@ -6,6 +6,7 @@ import (
 	"sync"
 	"time"
 
+	dispatchcache "github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/cache"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
 )
@@ -14,16 +15,18 @@ import (
 type ExpiryWorker struct {
 	repo     *repository.DeliveryRepository
 	hub      *ws.Hub
+	cache    *dispatchcache.RedisDispatchCache
 	interval time.Duration
 	stopChan chan struct{}
 	wg       sync.WaitGroup
 }
 
 // NewExpiryWorker creates a new worker.
-func NewExpiryWorker(repo *repository.DeliveryRepository, hub *ws.Hub, interval time.Duration) *ExpiryWorker {
+func NewExpiryWorker(repo *repository.DeliveryRepository, hub *ws.Hub, cache *dispatchcache.RedisDispatchCache, interval time.Duration) *ExpiryWorker {
 	return &ExpiryWorker{
 		repo:     repo,
 		hub:      hub,
+		cache:    cache,
 		interval: interval,
 		stopChan: make(chan struct{}),
 	}
@@ -103,8 +106,14 @@ func (w *ExpiryWorker) checkAllRequestsDone(ctx context.Context, deliveryOrderID
 		if err == nil && !hasAccepted {
 			// All requests expired/rejected and none accepted
 			_ = w.repo.UpdateDeliveryStatus(ctx, nil, deliveryOrderID, "no_rider_found")
+			if w.cache != nil && w.cache.Enabled() {
+				deliveryOrder, orderErr := w.repo.GetDeliveryOrderByID(ctx, deliveryOrderID)
+				if orderErr == nil && deliveryOrder != nil {
+					w.cache.ClearPendingOrder(ctx, deliveryOrder.OrderID)
+				}
+			}
 			log.Printf("[EXPIRY-WORKER] All requests expired/rejected for delivery_order %d, marked no_rider_found", deliveryOrderID)
-			
+
 			// If we wanted to trigger an automatic radius expansion, we could do it here
 			// by reading the delivery order and running the nearest riders search again.
 		}

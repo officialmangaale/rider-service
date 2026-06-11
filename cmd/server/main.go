@@ -11,6 +11,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	dispatchcache "github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/cache"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/database"
@@ -39,12 +40,28 @@ func main() {
 
 	// --- Initialize new delivery components ---
 	hub := ws.NewHub()
-	
+
 	restaurantCli := client.NewRestaurantClient(cfg.RestaurantServiceBaseURL, cfg.InternalServiceToken)
-	
+
 	deliveryRepo := repository.NewDeliveryRepository(db)
 	riderRepo := repository.NewRiderRepository(db)
-	
+
+	dispatchCache, err := dispatchcache.NewRedisDispatchCache(cfg.RedisURL)
+	if err != nil {
+		log.Printf("[WARN] Redis dispatch cache disabled: %v", err)
+	} else if dispatchCache != nil {
+		pingCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		if err := dispatchCache.Ping(pingCtx); err != nil {
+			log.Printf("[WARN] Redis dispatch cache ping failed, continuing with SQL fallback: %v", err)
+			_ = dispatchCache.Close()
+			dispatchCache = nil
+		} else {
+			log.Println("[INFO] Redis dispatch cache enabled")
+			defer dispatchCache.Close()
+		}
+		cancel()
+	}
+
 	deliverySvc := service.NewDeliveryService(
 		deliveryRepo,
 		riderRepo,
@@ -53,6 +70,7 @@ func main() {
 		cfg.SearchRadiusKm,
 		cfg.MaxRidersToNotify,
 		cfg.RequestExpirySeconds,
+		dispatchCache,
 	)
 
 	// --- Initialize workers ---
@@ -67,7 +85,7 @@ func main() {
 		log.Println("[WARN] SQS_ORDERS_QUEUE_URL not set. SQS consumer disabled.")
 	}
 
-	expiryWorker := worker.NewExpiryWorker(deliveryRepo, hub, 10*time.Second)
+	expiryWorker := worker.NewExpiryWorker(deliveryRepo, hub, dispatchCache, 10*time.Second)
 	expiryWorker.Start()
 
 	engine := router.Setup(db, cfg, hub, deliverySvc)
