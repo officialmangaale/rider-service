@@ -649,6 +649,22 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		}
 	}
 
+	// The restaurant order owns the canonical lifecycle. Commit that transition
+	// first; only then advance this service's delivery projection.
+	switch newStatus {
+	case models.DeliveryStatusPickedUp, models.DeliveryStatusOnTheWay, models.DeliveryStatusDelivered:
+		if err := s.restaurantCli.NotifyDeliveryStatusUpdate(orderID, client.DeliveryStatusPayload{
+			OrderID:          orderID,
+			RestaurantID:     deliveryOrder.RestaurantID,
+			RiderID:          riderID,
+			DeliveryStatus:   newStatus,
+			PaymentCollected: paymentCollected,
+			Notes:            notes,
+		}); err != nil {
+			return fmt.Errorf("canonical order transition failed: %w", err)
+		}
+	}
+
 	if err := s.deliveryRepo.UpdateDeliveryTimestamp(ctx, nil, deliveryOrder.DeliveryOrderID, newStatus); err != nil {
 		return err
 	}
@@ -673,24 +689,15 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		}
 	}
 
-	// Broadcast to customer tracking
+	// Projection-only event for rider-service consumers. Customer lifecycle
+	// screens consume the canonical restaurant-service WebSocket.
 	s.hub.SendToOrder(strconv.Itoa(orderID), ws.WSMessage{
-		Type: "ORDER_STATUS_UPDATED",
+		Type: "DELIVERY_STATUS_UPDATED",
 		Data: map[string]interface{}{
 			"order_id":        orderID,
 			"delivery_status": newStatus,
 		},
 	})
-
-	if newStatus == models.DeliveryStatusDelivered {
-		s.hub.SendToOrder(strconv.Itoa(orderID), ws.WSMessage{
-			Type: "ORDER_DELIVERED",
-			Data: map[string]interface{}{"order_id": orderID},
-		})
-	}
-
-	// Callback to restaurant-service for status updates
-	s.callbackDeliveryStatusUpdate(orderID, deliveryOrder.RestaurantID, riderID, newStatus, paymentCollected, notes)
 
 	return nil
 }
@@ -815,17 +822,6 @@ func (s *DeliveryService) callbackRiderAssigned(riderID string, orderID int) {
 		VehicleType:   vehicleType,
 		VehicleNumber: vehicleNumber,
 		AssignedAt:    time.Now().Format(time.RFC3339),
-	})
-}
-
-func (s *DeliveryService) callbackDeliveryStatusUpdate(orderID, restaurantID int, riderID, deliveryStatus string, paymentCollected bool, notes string) {
-	s.restaurantCli.NotifyDeliveryStatusUpdateAsync(orderID, client.DeliveryStatusPayload{
-		OrderID:          orderID,
-		RestaurantID:     restaurantID,
-		RiderID:          riderID,
-		DeliveryStatus:   deliveryStatus,
-		PaymentCollected: paymentCollected,
-		Notes:            notes,
 	})
 }
 
