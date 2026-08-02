@@ -130,60 +130,6 @@ func (r *OrderRepository) GetAvailableOrders(ctx context.Context, limit, offset 
 	return orders, total, nil
 }
 
-// UpdateOrderStatus updates the order_status with optimistic locking.
-func (r *OrderRepository) UpdateOrderStatus(ctx context.Context, tx *sql.Tx, orderID int, expectedStatus, newStatus string) error {
-	query := `UPDATE orders SET order_status = $3, updated_at = NOW()
-		WHERE order_id = $1 AND order_status = $2`
-	var result sql.Result
-	var err error
-	if tx != nil {
-		result, err = tx.ExecContext(ctx, query, orderID, expectedStatus, newStatus)
-	} else {
-		result, err = r.db.ExecContext(ctx, query, orderID, expectedStatus, newStatus)
-	}
-	if err != nil {
-		return err
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		return fmt.Errorf("order status conflict: expected %s but order is in different state", expectedStatus)
-	}
-	return nil
-}
-
-// AssignRiderToOrder sets delivery_partner_id on an order atomically.
-func (r *OrderRepository) AssignRiderToOrder(ctx context.Context, tx *sql.Tx, orderID int, riderID string) error {
-	query := `UPDATE orders SET delivery_partner_id = $2, updated_at = NOW()
-		WHERE order_id = $1 AND (delivery_partner_id IS NULL OR delivery_partner_id = $2)`
-	var result sql.Result
-	var err error
-	if tx != nil {
-		result, err = tx.ExecContext(ctx, query, orderID, riderID)
-	} else {
-		result, err = r.db.ExecContext(ctx, query, orderID, riderID)
-	}
-	if err != nil {
-		return err
-	}
-	affected, _ := result.RowsAffected()
-	if affected == 0 {
-		return fmt.Errorf("order already assigned to another rider")
-	}
-	return nil
-}
-
-// MarkDelivered sets actual_delivery_time.
-func (r *OrderRepository) MarkDelivered(ctx context.Context, tx *sql.Tx, orderID int) error {
-	query := `UPDATE orders SET actual_delivery_time = NOW(), updated_at = NOW() WHERE order_id = $1`
-	var err error
-	if tx != nil {
-		_, err = tx.ExecContext(ctx, query, orderID)
-	} else {
-		_, err = r.db.ExecContext(ctx, query, orderID)
-	}
-	return err
-}
-
 // GetOrderHistoryForRider returns past delivered/cancelled/failed orders for a rider.
 func (r *OrderRepository) GetOrderHistoryForRider(ctx context.Context, riderID string, limit, offset int) ([]*models.Order, int64, error) {
 	countQuery := `SELECT COUNT(*) FROM orders WHERE delivery_partner_id = $1 AND order_status IN ('delivered', 'cancelled', 'failed')`
@@ -213,18 +159,6 @@ func (r *OrderRepository) GetOrderHistoryForRider(ctx context.Context, riderID s
 		orders = append(orders, o)
 	}
 	return orders, total, nil
-}
-
-// UnassignRider clears delivery_partner_id on cancellation.
-func (r *OrderRepository) UnassignRider(ctx context.Context, tx *sql.Tx, orderID int) error {
-	query := `UPDATE orders SET delivery_partner_id = NULL, updated_at = NOW() WHERE order_id = $1`
-	var err error
-	if tx != nil {
-		_, err = tx.ExecContext(ctx, query, orderID)
-	} else {
-		_, err = r.db.ExecContext(ctx, query, orderID)
-	}
-	return err
 }
 
 // BeginTx starts a database transaction.

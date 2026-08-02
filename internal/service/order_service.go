@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"strconv"
 
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/constants"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
@@ -20,6 +21,7 @@ type OrderService struct {
 	riderRepo      *repository.RiderRepository
 	earningsRepo   *repository.EarningsRepository
 	historyRepo    *repository.StatusHistoryRepository
+	restaurantCli  *client.RestaurantClient
 }
 
 // NewOrderService creates a new OrderService.
@@ -30,6 +32,7 @@ func NewOrderService(
 	riderRepo *repository.RiderRepository,
 	earningsRepo *repository.EarningsRepository,
 	historyRepo *repository.StatusHistoryRepository,
+	restaurantCli *client.RestaurantClient,
 ) *OrderService {
 	return &OrderService{
 		orderRepo:      orderRepo,
@@ -38,6 +41,7 @@ func NewOrderService(
 		riderRepo:      riderRepo,
 		earningsRepo:   earningsRepo,
 		historyRepo:    historyRepo,
+		restaurantCli:  restaurantCli,
 	}
 }
 
@@ -170,6 +174,30 @@ func (s *OrderService) AcceptAssignment(ctx context.Context, assignmentID, rider
 		return nil, fmt.Errorf("assignment already responded to")
 	}
 
+	rider, err := s.riderRepo.GetByID(ctx, riderID)
+	if err != nil {
+		return nil, fmt.Errorf("rider profile not found")
+	}
+	riderName := stringPtrValue(rider.DisplayName)
+	if riderName == "" {
+		riderName = stringPtrValue(rider.FirstName)
+	}
+	if riderName == "" {
+		riderName = riderID
+	}
+	if s.restaurantCli == nil {
+		return nil, fmt.Errorf("canonical restaurant order service is unavailable")
+	}
+	if err := s.restaurantCli.NotifyRiderAssigned(assignment.OrderID, client.AssignRiderPayload{
+		RiderID:       riderID,
+		RiderName:     riderName,
+		RiderPhone:    stringPtrValue(rider.Phone),
+		VehicleType:   stringPtrValue(rider.VehicleType),
+		VehicleNumber: stringPtrValue(rider.VehicleRegistrationNumber),
+	}); err != nil {
+		return nil, fmt.Errorf("canonical rider assignment failed: %w", err)
+	}
+
 	// Begin transaction
 	tx, err := s.orderRepo.BeginTx(ctx)
 	if err != nil {
@@ -183,10 +211,6 @@ func (s *OrderService) AcceptAssignment(ctx context.Context, assignmentID, rider
 	}
 
 	// Claim the order — set delivery_partner_id atomically
-	if err := s.orderRepo.AssignRiderToOrder(ctx, tx, assignment.OrderID, riderID); err != nil {
-		return nil, err // "order already assigned to another rider"
-	}
-
 	// Set rider as on_trip
 	if err := s.riderRepo.SetOnTripTx(ctx, tx, riderID, true); err != nil {
 		return nil, err
@@ -234,39 +258,21 @@ func (s *OrderService) Delivered(ctx context.Context, orderID int, riderID strin
 		return nil, fmt.Errorf("cannot deliver: order is in '%s' state", order.OrderStatus)
 	}
 
+	if err := s.notifyCanonicalTransition(
+		order,
+		riderID,
+		"delivered",
+		paymentCollected != nil && *paymentCollected,
+		notes,
+	); err != nil {
+		return nil, err
+	}
+
 	tx, err := s.orderRepo.BeginTx(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-
-	// Update status with optimistic lock
-	if err := s.orderRepo.UpdateOrderStatus(ctx, tx, orderID, order.OrderStatus, string(constants.OrderDelivered)); err != nil {
-		return nil, err
-	}
-
-	// Set actual delivery time
-	if err := s.orderRepo.MarkDelivered(ctx, tx, orderID); err != nil {
-		return nil, err
-	}
-
-	if paymentCollected != nil || notes != "" {
-		metadata := map[string]interface{}{}
-		if paymentCollected != nil {
-			metadata["payment_collected"] = *paymentCollected
-		}
-		if notes != "" {
-			metadata["notes"] = notes
-		}
-		if err := s.historyRepo.RecordWithMetadata(ctx, tx, orderID, order.OrderStatus, string(constants.OrderDelivered), riderID, metadata); err != nil {
-			return nil, err
-		}
-	} else {
-		// Record audit history
-		if err := s.historyRepo.Record(ctx, tx, orderID, order.OrderStatus, string(constants.OrderDelivered), riderID); err != nil {
-			return nil, err
-		}
-	}
 
 	// Create delivery fee earning
 	if order.DeliveryFee > 0 {
@@ -305,10 +311,15 @@ func (s *OrderService) CancelDelivery(ctx context.Context, orderID int, riderID,
 		return nil, fmt.Errorf("order not assigned to this rider")
 	}
 
-	// Rider can cancel from ready or out_for_delivery
+	// A rider cancellation is a delivery projection event. It does not cancel
+	// the restaurant-owned order lifecycle.
 	currentStatus := constants.OrderStatus(order.OrderStatus)
 	if currentStatus != constants.OrderReady && currentStatus != constants.OrderOutForDelivery {
 		return nil, fmt.Errorf("cannot cancel: order is in '%s' state", order.OrderStatus)
+	}
+
+	if err := s.notifyCanonicalTransition(order, riderID, "cancelled", false, reason); err != nil {
+		return nil, err
 	}
 
 	tx, err := s.orderRepo.BeginTx(ctx)
@@ -317,23 +328,13 @@ func (s *OrderService) CancelDelivery(ctx context.Context, orderID int, riderID,
 	}
 	defer tx.Rollback()
 
-	// Update order status
-	if err := s.orderRepo.UpdateOrderStatus(ctx, tx, orderID, order.OrderStatus, string(constants.OrderCancelled)); err != nil {
-		return nil, err
-	}
-
-	// Unassign rider
-	if err := s.orderRepo.UnassignRider(ctx, tx, orderID); err != nil {
-		return nil, err
-	}
-
 	// Clear on_trip
 	if err := s.riderRepo.SetOnTripTx(ctx, tx, riderID, false); err != nil {
 		return nil, err
 	}
 
-	// Record audit history with reason
-	if err := s.historyRepo.Record(ctx, tx, orderID, order.OrderStatus, string(constants.OrderCancelled)+" ("+reason+")", riderID); err != nil {
+	// Record a projection/audit event, never a canonical order history row.
+	if err := s.historyRepo.Record(ctx, tx, orderID, order.OrderStatus, "delivery_cancelled ("+reason+")", riderID); err != nil {
 		return nil, err
 	}
 
@@ -387,7 +388,7 @@ func (s *OrderService) ArrivedAtCustomer(ctx context.Context, orderID int, rider
 // FailDelivery marks delivery as failed (e.g., customer unreachable).
 func (s *OrderService) FailDelivery(ctx context.Context, orderID int, riderID, reason string) (*models.Order, error) {
 	// Same flow as cancel for now — can be extended with different status if needed
-	return s.CancelDelivery(ctx, orderID, riderID, "FAILED: "+reason)
+	return s.failDeliveryProjection(ctx, orderID, riderID, reason)
 }
 
 // GetOrderDetail returns a specific order for the rider.
@@ -421,23 +422,69 @@ func (s *OrderService) transitionOrder(ctx context.Context, orderID int, riderID
 		return nil, fmt.Errorf("cannot transition: order is in '%s' state, expected '%s'", order.OrderStatus, expectedFrom)
 	}
 
+	deliveryStatus := string(newTo)
+	if newTo == constants.OrderOutForDelivery {
+		deliveryStatus = "picked_up"
+	}
+	if err := s.notifyCanonicalTransition(order, riderID, deliveryStatus, false, ""); err != nil {
+		return nil, err
+	}
+
+	return s.orderRepo.GetOrderByID(ctx, orderID)
+}
+
+func (s *OrderService) failDeliveryProjection(ctx context.Context, orderID int, riderID, reason string) (*models.Order, error) {
+	order, err := s.orderRepo.GetOrderByID(ctx, orderID)
+	if err != nil {
+		return nil, fmt.Errorf("order not found")
+	}
+	if order.DeliveryPartnerID == nil || *order.DeliveryPartnerID != riderID {
+		return nil, fmt.Errorf("order not assigned to this rider")
+	}
+	currentStatus := constants.OrderStatus(order.OrderStatus)
+	if currentStatus != constants.OrderReady && currentStatus != constants.OrderOutForDelivery {
+		return nil, fmt.Errorf("cannot fail delivery: order is in '%s' state", order.OrderStatus)
+	}
+	if err := s.notifyCanonicalTransition(order, riderID, "failed", false, reason); err != nil {
+		return nil, err
+	}
+
 	tx, err := s.orderRepo.BeginTx(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
-
-	if err := s.orderRepo.UpdateOrderStatus(ctx, tx, orderID, order.OrderStatus, string(newTo)); err != nil {
+	if err := s.riderRepo.SetOnTripTx(ctx, tx, riderID, false); err != nil {
 		return nil, err
 	}
-
-	if err := s.historyRepo.Record(ctx, tx, orderID, order.OrderStatus, string(newTo), riderID); err != nil {
+	if err := s.historyRepo.Record(ctx, tx, orderID, order.OrderStatus, "delivery_failed ("+reason+")", riderID); err != nil {
 		return nil, err
 	}
-
 	if err := tx.Commit(); err != nil {
 		return nil, err
 	}
-
 	return s.orderRepo.GetOrderByID(ctx, orderID)
+}
+
+func (s *OrderService) notifyCanonicalTransition(
+	order *models.Order,
+	riderID string,
+	deliveryStatus string,
+	paymentCollected bool,
+	notes string,
+) error {
+	if s.restaurantCli == nil {
+		return fmt.Errorf("canonical restaurant order service is unavailable")
+	}
+	if err := s.restaurantCli.NotifyDeliveryStatusUpdate(order.OrderID, client.DeliveryStatusPayload{
+		OrderID:          order.OrderID,
+		RestaurantID:     order.RestaurantID,
+		RiderID:          riderID,
+		DeliveryStatus:   deliveryStatus,
+		PaymentCollected: paymentCollected,
+		Notes:            notes,
+	}); err != nil {
+		return fmt.Errorf("canonical order transition failed: %w", err)
+	}
+	return nil
 }

@@ -5,6 +5,7 @@ import (
 
 	"github.com/gin-gonic/gin"
 
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/handler"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
@@ -19,6 +20,7 @@ func Setup(
 	cfg *config.Config,
 	hub *ws.Hub,
 	deliverySvc *service.DeliveryService,
+	restaurantCli *client.RestaurantClient,
 ) *gin.Engine {
 	r := gin.Default()
 	r.Use(middleware.CORSMiddleware())
@@ -35,7 +37,7 @@ func Setup(
 
 	// -- Services --
 	riderSvc := service.NewRiderService(riderRepo, orderRepo, earningsRepo)
-	orderSvc := service.NewOrderService(orderRepo, deliveryRepo, assignmentRepo, riderRepo, earningsRepo, statusHistoryRepo)
+	orderSvc := service.NewOrderService(orderRepo, deliveryRepo, assignmentRepo, riderRepo, earningsRepo, statusHistoryRepo, restaurantCli)
 	locationSvc := service.NewLocationService(riderRepo, locationHistoryRepo)
 	earningsSvc := service.NewEarningsService(earningsRepo)
 	notifSvc := service.NewNotificationService(notifRepo)

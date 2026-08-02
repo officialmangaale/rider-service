@@ -51,8 +51,7 @@ func NewRestaurantClient(baseURL, token string) *RestaurantClient {
 // to inform restaurant-service that a rider has been assigned.
 func (c *RestaurantClient) NotifyRiderAssigned(orderID int, payload AssignRiderPayload) error {
 	if c.baseURL == "" {
-		log.Printf("[RESTAURANT-CLIENT] Base URL not configured, skipping callback for order %d", orderID)
-		return nil
+		return fmt.Errorf("restaurant-service base URL is not configured")
 	}
 
 	url := fmt.Sprintf("%s/internal/orders/%d/assign-rider", c.baseURL, orderID)
@@ -105,8 +104,7 @@ func (c *RestaurantClient) NotifyRiderAssignedAsync(orderID int, payload AssignR
 // NotifyDeliveryStatusUpdate calls POST {baseURL}/internal/orders/{orderId}/delivery-status
 func (c *RestaurantClient) NotifyDeliveryStatusUpdate(orderID int, payload DeliveryStatusPayload) error {
 	if c.baseURL == "" {
-		log.Printf("[RESTAURANT-CLIENT] Base URL not configured, skipping status callback for order %d", orderID)
-		return nil
+		return fmt.Errorf("restaurant-service base URL is not configured")
 	}
 
 	url := fmt.Sprintf("%s/internal/orders/%d/delivery-status", c.baseURL, orderID)

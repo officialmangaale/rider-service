@@ -88,7 +88,7 @@ func main() {
 	expiryWorker := worker.NewExpiryWorker(deliveryRepo, hub, dispatchCache, 10*time.Second)
 	expiryWorker.Start()
 
-	engine := router.Setup(db, cfg, hub, deliverySvc)
+	engine := router.Setup(db, cfg, hub, deliverySvc, restaurantCli)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,

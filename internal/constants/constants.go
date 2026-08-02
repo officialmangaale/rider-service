@@ -5,8 +5,7 @@ type OrderStatus string
 
 const (
 	OrderPending        OrderStatus = "pending"
-	OrderPlaced         OrderStatus = "placed"
-	OrderAccepted       OrderStatus = "accepted"
+	OrderConfirmed      OrderStatus = "confirmed"
 	OrderPreparing      OrderStatus = "preparing"
 	OrderReady          OrderStatus = "ready"
 	OrderOutForDelivery OrderStatus = "out_for_delivery"
@@ -18,8 +17,8 @@ const (
 // Restaurant owns: pending→placed→accepted→preparing→ready.
 // Rider owns: ready→out_for_delivery→delivered (and cancellation from certain states).
 var RiderAllowedTransitions = map[OrderStatus][]OrderStatus{
-	OrderReady:          {OrderOutForDelivery},         // picked up
-	OrderOutForDelivery: {OrderDelivered, OrderCancelled}, // delivered or cancel
+	OrderReady:          {OrderOutForDelivery},
+	OrderOutForDelivery: {OrderDelivered},
 }
 
 // IsRiderAllowedTransition checks if rider can move order between these states.
