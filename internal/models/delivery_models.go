@@ -29,11 +29,15 @@ type DeliveryOrder struct {
 	RestaurantOwned bool       `json:"restaurant_owned"`
 	RestaurantName  string     `json:"restaurant_name"`
 	RestaurantPhone string     `json:"restaurant_phone"`
+	CustomerName    string     `json:"customer_name"`
+	CustomerPhone   string     `json:"customer_phone"`
+	ItemsSummary    string     `json:"items_summary"`
 	CreatedAt       time.Time  `json:"created_at"`
 	UpdatedAt       time.Time  `json:"updated_at"`
 	AssignedAt      *time.Time `json:"assigned_at"`
 	PickedUpAt      *time.Time `json:"picked_up_at"`
 	DeliveredAt     *time.Time `json:"delivered_at"`
+	RiderArrivedAt  *time.Time `json:"rider_arrived_at"`
 }
 
 // DeliveryOrderRequest represents a pending request sent to a nearby rider.

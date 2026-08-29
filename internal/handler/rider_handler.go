@@ -89,12 +89,12 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 			FirstName: firstName,
 			LastName:  lastName,
 			Phone:     phone,
-			City:      "Pune", // Mocked statically for now
+			City:      "",
 		},
 		Rider: dto.RiderStats{
 			AvgRating:          avgRating,
 			AvailabilityStatus: status,
-			ActiveHoursToday:   4.5, // Mocked dynamically
+			ActiveHoursToday:   0.0,
 		},
 		Vehicle: dto.VehicleProfile{
 			VehicleType:    vehicleType,

@@ -187,6 +187,13 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	if len(riders) == 0 {
 		s.logEligibilitySummary(ctx, evt)
 		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
+		s.hub.SendToOrder(strconv.Itoa(evt.OrderID), ws.WSMessage{
+			Type: "DELIVERY_STATUS_UPDATED",
+			Data: map[string]interface{}{
+				"order_id":        evt.OrderID,
+				"delivery_status": models.DeliveryStatusNoRiderFound,
+			},
+		})
 		if s.dispatchCache != nil && s.dispatchCache.Enabled() {
 			s.dispatchCache.ClearPendingOrder(ctx, evt.OrderID)
 		}
@@ -548,7 +555,8 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 	}
 
 	// Cancel other pending requests for same order
-	if err := s.deliveryRepo.CancelOtherRequests(ctx, tx, req.DeliveryOrderID, requestID); err != nil {
+	cancelledRiderIDs, err := s.deliveryRepo.CancelOtherRequests(ctx, tx, req.DeliveryOrderID, requestID)
+	if err != nil {
 		log.Printf("[DELIVERY] Failed to cancel other requests: %v", err)
 	}
 
@@ -577,7 +585,7 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 	log.Printf("[DELIVERY] Rider %s accepted request %d for order %d", riderID, requestID, req.OrderID)
 
 	// Notify other riders that order is taken
-	s.notifyOtherRiders(ctx, req.DeliveryOrderID, riderID, req.OrderID)
+	s.notifyOtherRiders(ctx, req.DeliveryOrderID, riderID, req.OrderID, cancelledRiderIDs)
 
 	// Notify customer
 	s.hub.SendToOrder(strconv.Itoa(req.OrderID), ws.WSMessage{
@@ -665,9 +673,12 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		}
 	}
 
+	oldStatus := deliveryOrder.DeliveryStatus
 	if err := s.deliveryRepo.UpdateDeliveryTimestamp(ctx, nil, deliveryOrder.DeliveryOrderID, newStatus); err != nil {
 		return err
 	}
+	_ = s.deliveryRepo.RecordStatusHistory(ctx, nil, deliveryOrder.OrderID, oldStatus, newStatus, riderID)
+	
 	log.Printf("[DELIVERY] Order %d status updated to %s by rider %s", orderID, newStatus, riderID)
 
 	isRestaurantOwned := deliveryOrder.RestaurantOwned
@@ -686,6 +697,10 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 
 		if isRestaurantOwned {
 			log.Printf("[DELIVERY] Skipping platform payout for restaurant-owned order %d", orderID)
+		} else {
+			// Add automatic earnings creation on delivery completion
+			_ = s.deliveryRepo.RecordEarning(ctx, nil, riderID, orderID, "delivery_fee", 30.00, "Base delivery payout")
+			log.Printf("[DELIVERY] Recorded base delivery payout for order %d to rider %s", orderID, riderID)
 		}
 	}
 
@@ -780,12 +795,19 @@ func buildTimeline(do *models.DeliveryOrder) []models.DeliveryTimelineItem {
 	return tl
 }
 
-func (s *DeliveryService) notifyOtherRiders(ctx context.Context, deliveryOrderID int, acceptedRiderID string, orderID int) {
-	// Get all requests for this order and notify non-accepted riders
-	// Simple approach: we already cancelled them, just send WS event
-	// We don't have a method to get all riders for an order, so we skip for now
-	// The cancelled status will be picked up by the rider app on next poll
-	log.Printf("[DELIVERY] Other riders notified about order %d assignment", orderID)
+func (s *DeliveryService) notifyOtherRiders(ctx context.Context, deliveryOrderID int, acceptedRiderID string, orderID int, cancelledRiderIDs []string) {
+	// Send WS event to riders whose requests were cancelled
+	for _, rID := range cancelledRiderIDs {
+		if rID != acceptedRiderID {
+			s.hub.SendToRider(rID, ws.WSMessage{
+				Type: "ORDER_ASSIGNED_TO_OTHER_RIDER",
+				Data: map[string]interface{}{
+					"order_id": orderID,
+				},
+			})
+		}
+	}
+	log.Printf("[DELIVERY] Notified %d other riders about order %d assignment", len(cancelledRiderIDs), orderID)
 }
 
 func (s *DeliveryService) callbackRiderAssigned(riderID string, orderID int) {
@@ -834,11 +856,21 @@ func (s *DeliveryService) checkAllRequestsDone(ctx context.Context, deliveryOrde
 		hasAccepted, _ := s.deliveryRepo.HasAcceptedRequest(ctx, deliveryOrderID)
 		if !hasAccepted {
 			_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrderID, models.DeliveryStatusNoRiderFound)
-			if s.dispatchCache != nil && s.dispatchCache.Enabled() {
-				deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, deliveryOrderID)
-				if err == nil && deliveryOrder != nil {
+			
+			var orderID int
+			deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, deliveryOrderID)
+			if err == nil && deliveryOrder != nil {
+				orderID = deliveryOrder.OrderID
+				if s.dispatchCache != nil && s.dispatchCache.Enabled() {
 					s.dispatchCache.ClearPendingOrder(ctx, deliveryOrder.OrderID)
 				}
+				s.hub.SendToOrder(strconv.Itoa(orderID), ws.WSMessage{
+					Type: "DELIVERY_STATUS_UPDATED",
+					Data: map[string]interface{}{
+						"order_id":        orderID,
+						"delivery_status": models.DeliveryStatusNoRiderFound,
+					},
+				})
 			}
 			log.Printf("[DELIVERY] All requests rejected/expired for delivery_order %d, marked no_rider_found", deliveryOrderID)
 		}

@@ -53,11 +53,13 @@ func (r *DeliveryRepository) MarkEventProcessed(ctx context.Context, eventID str
 func (r *DeliveryRepository) CreateDeliveryOrder(ctx context.Context, evt *models.OrderPlacedEvent) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO delivery_orders (order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assignment_type, restaurant_name, restaurant_phone)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'rider_searching','platform',$12,$13)
+		`INSERT INTO delivery_orders (order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assignment_type, restaurant_name, restaurant_phone, customer_name, customer_phone)
+		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'rider_searching','platform',$12,$13,$14,$15)
 		 ON CONFLICT (order_id) DO UPDATE SET
 			restaurant_name = COALESCE(NULLIF(delivery_orders.restaurant_name, ''), EXCLUDED.restaurant_name),
 			restaurant_phone = COALESCE(NULLIF(delivery_orders.restaurant_phone, ''), EXCLUDED.restaurant_phone),
+			customer_name = COALESCE(NULLIF(delivery_orders.customer_name, ''), EXCLUDED.customer_name),
+			customer_phone = COALESCE(NULLIF(delivery_orders.customer_phone, ''), EXCLUDED.customer_phone),
 			pickup_latitude = CASE WHEN delivery_orders.pickup_latitude = 0 THEN EXCLUDED.pickup_latitude ELSE delivery_orders.pickup_latitude END,
 			pickup_longitude = CASE WHEN delivery_orders.pickup_longitude = 0 THEN EXCLUDED.pickup_longitude ELSE delivery_orders.pickup_longitude END,
 			pickup_address = COALESCE(NULLIF(delivery_orders.pickup_address, ''), EXCLUDED.pickup_address),
@@ -66,17 +68,19 @@ func (r *DeliveryRepository) CreateDeliveryOrder(ctx context.Context, evt *model
 			drop_address = COALESCE(NULLIF(delivery_orders.drop_address, ''), EXCLUDED.drop_address),
 			amount = CASE WHEN delivery_orders.amount = 0 THEN EXCLUDED.amount ELSE delivery_orders.amount END,
 			payment_mode = COALESCE(NULLIF(delivery_orders.payment_mode, ''), EXCLUDED.payment_mode)
-		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone`,
+		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at`,
 		evt.OrderID, evt.RestaurantID, evt.CustomerID.Int(),
 		evt.Pickup.Latitude, evt.Pickup.Longitude, evt.Pickup.Address,
 		evt.Drop.Latitude, evt.Drop.Longitude, evt.Drop.Address,
 		evt.Amount, evt.PaymentMode, evt.RestaurantName, evt.RestaurantPhone,
+		evt.CustomerName, evt.CustomerPhone,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
-		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone)
+		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -137,14 +141,15 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 			assigned_at = EXCLUDED.assigned_at,
 			assigned_rider_id = EXCLUDED.rider_user_id,
 			updated_at = NOW()
-		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone`,
+		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at`,
 		evt.OrderID, evt.RestaurantID, evt.RiderUserID, evt.RestaurantName, evt.RestaurantPhone, evt.AssignedAt,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
-		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone)
+		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -154,14 +159,15 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 func (r *DeliveryRepository) GetDeliveryOrderByOrderID(ctx context.Context, orderID int) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone
+		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
 		 FROM delivery_orders WHERE order_id=$1`, orderID,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
-		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone)
+		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -171,14 +177,15 @@ func (r *DeliveryRepository) GetDeliveryOrderByOrderID(ctx context.Context, orde
 func (r *DeliveryRepository) GetDeliveryOrderByID(ctx context.Context, deliveryOrderID int) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone
+		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
 		 FROM delivery_orders WHERE delivery_order_id=$1`, deliveryOrderID,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
-		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone)
+		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -200,7 +207,7 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 		args = append(args, s)
 	}
 
-	query := fmt.Sprintf(`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone
+	query := fmt.Sprintf(`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
 		 FROM delivery_orders
 		 WHERE (rider_user_id=$1 OR assigned_rider_id=$1)
 		 AND delivery_status IN (%s)
@@ -220,7 +227,8 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 			&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 			&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 			&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
-			&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone); err != nil {
+			&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
+			&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt); err != nil {
 			return nil, err
 		}
 		orders = append(orders, &o)
@@ -231,7 +239,7 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 func (r *DeliveryRepository) GetActiveOrderForRider(ctx context.Context, riderUserID string) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone
+		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
 		 FROM delivery_orders
 		 WHERE (rider_user_id=$1 OR assigned_rider_id=$1)
 		 AND delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
@@ -242,7 +250,8 @@ func (r *DeliveryRepository) GetActiveOrderForRider(ctx context.Context, riderUs
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
-		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone)
+		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
 	if err != nil {
 		return nil, err
 	}
@@ -293,6 +302,8 @@ func (r *DeliveryRepository) AssignRider(ctx context.Context, tx *sql.Tx, delive
 func (r *DeliveryRepository) UpdateDeliveryTimestamp(ctx context.Context, tx *sql.Tx, deliveryOrderID int, status string) error {
 	var q string
 	switch status {
+	case models.DeliveryStatusRiderArrivedRestaurant:
+		q = `UPDATE delivery_orders SET rider_arrived_at=NOW(), delivery_status=$2, updated_at=NOW() WHERE delivery_order_id=$1`
 	case models.DeliveryStatusPickedUp:
 		q = `UPDATE delivery_orders SET picked_up_at=NOW(), delivery_status=$2, updated_at=NOW() WHERE delivery_order_id=$1`
 	case models.DeliveryStatusDelivered:
@@ -305,6 +316,29 @@ func (r *DeliveryRepository) UpdateDeliveryTimestamp(ctx context.Context, tx *sq
 		return err
 	}
 	_, err := r.db.ExecContext(ctx, q, deliveryOrderID, status)
+	return err
+}
+
+func (r *DeliveryRepository) RecordStatusHistory(ctx context.Context, tx *sql.Tx, orderID int, fromStatus, toStatus string, changedBy string) error {
+	query := `INSERT INTO delivery_status_history (order_id, from_status, to_status, changed_by)
+		VALUES ($1, $2, $3, $4)`
+	var err error
+	if tx != nil {
+		_, err = tx.ExecContext(ctx, query, orderID, fromStatus, toStatus, changedBy)
+	} else {
+		_, err = r.db.ExecContext(ctx, query, orderID, fromStatus, toStatus, changedBy)
+	}
+	return err
+}
+
+func (r *DeliveryRepository) RecordEarning(ctx context.Context, tx *sql.Tx, riderID string, orderID int, earningType string, amount float64, description string) error {
+	query := `INSERT INTO rider_earnings (rider_id, order_id, type, amount, description) VALUES ($1, $2, $3, $4, $5)`
+	var err error
+	if tx != nil {
+		_, err = tx.ExecContext(ctx, query, riderID, orderID, earningType, amount, description)
+	} else {
+		_, err = r.db.ExecContext(ctx, query, riderID, orderID, earningType, amount, description)
+	}
 	return err
 }
 
@@ -391,11 +425,24 @@ func (r *DeliveryRepository) RejectRequest(ctx context.Context, requestID int) e
 	return err
 }
 
-func (r *DeliveryRepository) CancelOtherRequests(ctx context.Context, tx *sql.Tx, deliveryOrderID int, exceptRequestID int) error {
+func (r *DeliveryRepository) CancelOtherRequests(ctx context.Context, tx *sql.Tx, deliveryOrderID int, exceptRequestID int) ([]string, error) {
 	q := `UPDATE delivery_order_requests SET status='cancelled', updated_at=NOW()
-	      WHERE delivery_order_id=$1 AND request_id!=$2 AND status='pending'`
-	_, err := tx.ExecContext(ctx, q, deliveryOrderID, exceptRequestID)
-	return err
+	      WHERE delivery_order_id=$1 AND request_id!=$2 AND status='pending'
+	      RETURNING rider_id`
+	rows, err := tx.QueryContext(ctx, q, deliveryOrderID, exceptRequestID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var riderIDs []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		riderIDs = append(riderIDs, id)
+	}
+	return riderIDs, nil
 }
 
 func (r *DeliveryRepository) ExpirePendingRequests(ctx context.Context) ([]models.DeliveryOrderRequest, error) {
