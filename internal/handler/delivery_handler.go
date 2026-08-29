@@ -236,8 +236,8 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 		PaymentMethod:   o.PaymentMode,
 		AmountToCollect: o.Amount, // Could add logic if prepaid
 		Customer: &dto.CustomerInfo{
-			Name:  "Customer", // To fetch from user profile if needed
-			Phone: "",         // To fetch
+			Name:  o.CustomerName,
+			Phone: o.CustomerPhone,
 		},
 		DeliveryAddress: &dto.DeliveryAddressInfo{
 			Address:   o.DropAddress,
@@ -249,7 +249,7 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 			Latitude:  o.PickupLatitude,
 			Longitude: o.PickupLongitude,
 		},
-		ItemsSummary:   "Items", // To fetch from order items
+		ItemsSummary:   o.ItemsSummary,
 		MapsURL:        mapsURL,
 		AssignmentType: assignmentType,
 		RestaurantOwned: o.RestaurantOwned,

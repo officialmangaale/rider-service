@@ -60,7 +60,6 @@ func (h *OrderHandler) GetIncomingAssignment(c *gin.Context) {
 		return
 	}
 
-	customerName := "Customer"
 	pickupAddress := order.RestaurantAddress
 	deliveryAddress := ""
 	if order.DeliveryAddress != nil {
@@ -75,16 +74,16 @@ func (h *OrderHandler) GetIncomingAssignment(c *gin.Context) {
 		Order: &dto.OrderResponse{
 			ID:              strconv.Itoa(order.OrderID),
 			RestaurantName:  order.RestaurantName,
-			CustomerName:    customerName,
+			CustomerName:    "",
 			PickupAddress:   pickupAddress,
 			DeliveryAddress: deliveryAddress,
-			DistanceKm:      4.5, // Calculate if lat/lng available
+			DistanceKm:      0.0,
 			BasePayout:      order.DeliveryFee,
 			DistancePayout:  0.0,
 			WaitingCharges:  0.0,
 			SurgeBonus:      0.0,
 			TipAmount:       order.TipAmount,
-			ItemsCount:      1, // Count from order items if available
+			ItemsCount:      0,
 		},
 	}
 

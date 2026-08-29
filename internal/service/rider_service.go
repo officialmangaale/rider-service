@@ -2,6 +2,7 @@ package service
 
 import (
 	"context"
+	"errors"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
@@ -111,6 +112,14 @@ func (s *RiderService) GetOnboardingStatus(ctx context.Context, userID string) (
 
 // GoOnline sets the rider as available.
 func (s *RiderService) GoOnline(ctx context.Context, userID string) error {
+	rider, err := s.riderRepo.GetByID(ctx, userID)
+	if err != nil {
+		return err
+	}
+	if rider.Status != nil && (*rider.Status == "suspended" || *rider.Status == "blocked" || *rider.Status == "inactive") {
+		return errors.New("cannot go online: account is " + *rider.Status)
+	}
+
 	if err := s.riderRepo.SetAvailability(ctx, userID, true); err != nil {
 		return err
 	}

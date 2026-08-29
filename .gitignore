@@ -97,3 +97,9 @@ pnpm-lock.yaml
 
 # Migrations (usually keep SQL committed; ignore compiled artifacts only)
 # migrations/*.lock
+
+# Database exports may contain production/customer data. Keep schema references
+# in migrations and generate transient schema-only dumps outside the repository.
+/fooddelivery.sql
+*.dump
+*.backup
