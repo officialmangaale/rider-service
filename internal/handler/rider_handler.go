@@ -144,8 +144,9 @@ func (h *RiderHandler) UpdateProfile(c *gin.Context) {
 
 // DeleteAccount marks the rider's user record as deleted and sets a deleted_at timestamp.
 func (h *RiderHandler) DeleteAccount(c *gin.Context) {
-	userID, ok := authenticatedUserIDFromContext(c)
-	if !ok {
+	userID := middleware.GetUserID(c)
+	if userID == "" {
+		dto.Unauthorized(c, "Authentication required")
 		return
 	}
 
