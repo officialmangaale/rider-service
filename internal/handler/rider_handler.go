@@ -142,6 +142,22 @@ func (h *RiderHandler) UpdateProfile(c *gin.Context) {
 	dto.Success(c, http.StatusOK, "profile updated", rider)
 }
 
+// DeleteAccount marks the rider's user record as deleted and sets a deleted_at timestamp.
+func (h *RiderHandler) DeleteAccount(c *gin.Context) {
+	userID, ok := authenticatedUserIDFromContext(c)
+	if !ok {
+		return
+	}
+
+	err := h.riderSvc.DeleteAccount(c.Request.Context(), userID)
+	if err != nil {
+		dto.InternalError(c, "Failed to delete account")
+		return
+	}
+
+	dto.Success(c, http.StatusOK, "Account scheduled for deletion in 7 days", nil)
+}
+
 // UpdateVehicle updates vehicle details.
 func (h *RiderHandler) UpdateVehicle(c *gin.Context) {
 	userID := middleware.GetUserID(c)

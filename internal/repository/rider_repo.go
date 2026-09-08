@@ -63,6 +63,17 @@ func (r *RiderRepository) GetByID(ctx context.Context, userID string) (*models.U
 	return scanRider(row)
 }
 
+// DeleteAccount soft deletes a user.
+func (r *RiderRepository) DeleteAccount(ctx context.Context, userID string) error {
+	query := `
+		UPDATE users 
+		SET is_deleted = true, deleted_at = NOW(), status = 'deleted'
+		WHERE id = $1
+	`
+	_, err := r.db.ExecContext(ctx, query, userID)
+	return err
+}
+
 // UpdateProfile updates basic profile fields.
 func (r *RiderRepository) UpdateProfile(ctx context.Context, userID string, firstName, lastName, email, displayName, avatarURL *string) (*models.User, error) {
 	query := `UPDATE users SET

@@ -73,6 +73,7 @@ func Setup(
 	{
 		rider.GET("/profile", riderH.GetProfile)
 		rider.PUT("/profile", riderH.UpdateProfile)
+		rider.DELETE("/account", riderH.DeleteAccount)
 		rider.PUT("/vehicle", riderH.UpdateVehicle)
 		rider.PUT("/bank-details", riderH.UpdateBankDetails)
 		rider.PUT("/kyc", riderH.UpdateKYC)

@@ -31,6 +31,11 @@ func (s *RiderService) GetRestaurantsForRider(ctx context.Context, riderID strin
 	return s.riderRepo.GetRestaurantsForRider(ctx, riderID)
 }
 
+// DeleteAccount soft deletes the rider account.
+func (s *RiderService) DeleteAccount(ctx context.Context, userID string) error {
+	return s.riderRepo.DeleteAccount(ctx, userID)
+}
+
 // UpdateProfile updates basic profile fields.
 func (s *RiderService) UpdateProfile(ctx context.Context, userID string, firstName, lastName, email, displayName, avatarURL *string) (*models.User, error) {
 	return s.riderRepo.UpdateProfile(ctx, userID, firstName, lastName, email, displayName, avatarURL)
