@@ -474,6 +474,25 @@ func (r *DeliveryRepository) CountPendingForOrder(ctx context.Context, deliveryO
 	return count, err
 }
 
+// CountCompletedDeliveries returns how many deliveries a rider has actually
+// completed.
+//
+// Used by the rider referral programme to decide whether a referred rider has
+// met the configured minimum. Only `delivered` counts — cancelled and failed
+// deliveries must never move a rider toward a referral reward.
+//
+// Both rider columns are checked because a delivery may be attributed through
+// either, matching the ownership test in DeliveryService.UpdateDeliveryStatus.
+func (r *DeliveryRepository) CountCompletedDeliveries(ctx context.Context, riderID string) (int, error) {
+	var count int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT COUNT(*) FROM delivery_orders
+		 WHERE delivery_status = 'delivered'
+		   AND (rider_user_id = $1 OR assigned_rider_id = $1)`,
+		riderID).Scan(&count)
+	return count, err
+}
+
 func (r *DeliveryRepository) HasAcceptedRequest(ctx context.Context, deliveryOrderID int) (bool, error) {
 	var exists bool
 	err := r.db.QueryRowContext(ctx,

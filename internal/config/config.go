@@ -23,6 +23,11 @@ type Config struct {
 	RestaurantServiceBaseURL string
 	InternalServiceToken     string
 
+	// RiderReferralEnabled gates the rider-referral qualification callback to
+	// restaurant-service. Defaults to false: with it off, delivery completion
+	// behaves exactly as it did before the referral programme existed.
+	RiderReferralEnabled bool
+
 	// Delivery config
 	SearchRadiusKm       float64
 	MaxRidersToNotify    int
@@ -45,6 +50,9 @@ func Load() (*Config, error) {
 		// Internal
 		RestaurantServiceBaseURL: os.Getenv("RESTAURANT_SERVICE_INTERNAL_BASE_URL"),
 		InternalServiceToken:     os.Getenv("INTERNAL_SERVICE_TOKEN"),
+
+		// Referral programme — off by default.
+		RiderReferralEnabled: getEnvBool("RIDER_REFERRAL_ENABLED", false),
 
 		// Delivery defaults
 		SearchRadiusKm:       getEnvFloat("SEARCH_RADIUS_KM", 5.0),
@@ -91,6 +99,15 @@ func getEnvFloat(key string, fallback float64) float64 {
 	if v := os.Getenv(key); v != "" {
 		if f, err := strconv.ParseFloat(v, 64); err == nil {
 			return f
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		if b, err := strconv.ParseBool(v); err == nil {
+			return b
 		}
 	}
 	return fallback

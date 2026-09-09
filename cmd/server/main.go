@@ -73,6 +73,14 @@ func main() {
 		dispatchCache,
 	)
 
+	// Rider referral qualification. Registering the flag is additive: with
+	// RIDER_REFERRAL_ENABLED unset, delivery completion behaves exactly as it
+	// did before the referral programme existed.
+	deliverySvc.SetRiderReferralEnabled(cfg.RiderReferralEnabled)
+	if cfg.RiderReferralEnabled {
+		log.Println("[INIT] Rider referral qualification callback enabled")
+	}
+
 	// --- Initialize workers ---
 	var sqsConsumer *worker.SQSConsumer
 	if cfg.SQSOrdersQueueURL != "" {

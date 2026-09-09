@@ -150,3 +150,82 @@ func (c *RestaurantClient) NotifyDeliveryStatusUpdateAsync(orderID int, payload 
 		}
 	}()
 }
+
+// RiderDeliveryCompletedPayload is the body sent to restaurant-service when a
+// rider completes a delivery, so the referral domain can decide whether that
+// delivery qualifies a rider referral.
+//
+// It carries a fact, not a decision: this service owns delivery completion and
+// the rider's running delivery count, while the rules that turn those into a
+// reward live in restaurant-service.
+type RiderDeliveryCompletedPayload struct {
+	// RiderID is the rider's auth user id — the same subject the referral
+	// domain keys on.
+	RiderID string `json:"rider_id"`
+	// DeliveryRef identifies this delivery, and is what makes the call
+	// idempotent: the outbox dedupes on it, so a retry cannot qualify a
+	// referral twice.
+	DeliveryRef         string `json:"delivery_ref"`
+	CompletedDeliveries int    `json:"completed_deliveries"`
+}
+
+// NotifyRiderDeliveryCompleted calls
+// POST {baseURL}/internal/referrals/rider-delivery-completed.
+func (c *RestaurantClient) NotifyRiderDeliveryCompleted(payload RiderDeliveryCompletedPayload) error {
+	if c.baseURL == "" {
+		return fmt.Errorf("restaurant-service base URL is not configured")
+	}
+
+	url := fmt.Sprintf("%s/internal/referrals/rider-delivery-completed", c.baseURL)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal referral payload: %w", err)
+	}
+
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("referral callback to restaurant-service failed: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return fmt.Errorf("restaurant-service returned status %d for rider referral callback", resp.StatusCode)
+}
+
+// NotifyRiderDeliveryCompletedAsync fires the callback in the background.
+//
+// A referral is worth strictly less than a delivery, so this never blocks and
+// never reports failure to the caller. It retries a few times and then gives
+// up loudly in the log: the delivery itself has already been committed, and a
+// missed referral is recoverable by hand, whereas a failed delivery is not.
+//
+// The rider id is deliberately not logged on failure — only the delivery
+// reference, which is not personal data.
+func (c *RestaurantClient) NotifyRiderDeliveryCompletedAsync(payload RiderDeliveryCompletedPayload) {
+	if c.baseURL == "" {
+		return
+	}
+	go func() {
+		const maxRetries = 3
+		for attempt := 1; attempt <= maxRetries; attempt++ {
+			if err := c.NotifyRiderDeliveryCompleted(payload); err == nil {
+				return
+			} else if attempt == maxRetries {
+				log.Printf("[RESTAURANT-CLIENT] Rider referral callback gave up after %d attempts for delivery %s: %v",
+					maxRetries, payload.DeliveryRef, err)
+			} else {
+				time.Sleep(time.Duration(attempt*2) * time.Second)
+			}
+		}
+	}()
+}

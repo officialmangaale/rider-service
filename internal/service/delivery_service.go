@@ -28,6 +28,19 @@ type DeliveryService struct {
 	searchRadiusKm float64
 	maxRiders      int
 	requestExpiry  time.Duration
+
+	// riderReferralEnabled gates the referral callback on delivery completion.
+	// False by default, so a deployment that has not opted in behaves exactly
+	// as it did before the referral programme existed.
+	riderReferralEnabled bool
+}
+
+// SetRiderReferralEnabled turns the rider-referral qualification callback on.
+//
+// A setter rather than a constructor argument so that every existing caller
+// keeps compiling unchanged and the default stays off.
+func (s *DeliveryService) SetRiderReferralEnabled(enabled bool) {
+	s.riderReferralEnabled = enabled
 }
 
 func NewDeliveryService(
@@ -549,8 +562,20 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 		return nil, fmt.Errorf("failed to accept: %w", err)
 	}
 
-	// Assign rider to delivery order
+	// Assign rider to delivery order.
+	//
+	// This UPDATE is guarded by `assigned_rider_id IS NULL`, so it — not the
+	// Redis lock above — is what actually makes concurrent accepts safe: two
+	// riders racing on the same delivery order serialise on the row and the
+	// loser matches zero rows. The Redis lock only short-circuits earlier when
+	// it is configured, and it deliberately falls through on error.
 	if err := s.deliveryRepo.AssignRider(ctx, tx, req.DeliveryOrderID, riderID); err != nil {
+		// The loser of the race gets the same clear, rider-facing message as
+		// the pre-checks above rather than a wrapped internal error.
+		if strings.Contains(err.Error(), "already assigned") {
+			log.Printf("[DELIVERY] Late accept rejected order_id=%d rider_id=%s", req.OrderID, riderID)
+			return nil, fmt.Errorf("order already assigned to another rider")
+		}
 		return nil, fmt.Errorf("failed to assign rider: %w", err)
 	}
 
@@ -678,7 +703,7 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		return err
 	}
 	_ = s.deliveryRepo.RecordStatusHistory(ctx, nil, deliveryOrder.OrderID, oldStatus, newStatus, riderID)
-	
+
 	log.Printf("[DELIVERY] Order %d status updated to %s by rider %s", orderID, newStatus, riderID)
 
 	isRestaurantOwned := deliveryOrder.RestaurantOwned
@@ -702,6 +727,8 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 			_ = s.deliveryRepo.RecordEarning(ctx, nil, riderID, orderID, "delivery_fee", 30.00, "Base delivery payout")
 			log.Printf("[DELIVERY] Recorded base delivery payout for order %d to rider %s", orderID, riderID)
 		}
+
+		s.notifyRiderReferral(ctx, riderID, orderID)
 	}
 
 	// Projection-only event for rider-service consumers. Customer lifecycle
@@ -856,7 +883,7 @@ func (s *DeliveryService) checkAllRequestsDone(ctx context.Context, deliveryOrde
 		hasAccepted, _ := s.deliveryRepo.HasAcceptedRequest(ctx, deliveryOrderID)
 		if !hasAccepted {
 			_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrderID, models.DeliveryStatusNoRiderFound)
-			
+
 			var orderID int
 			deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, deliveryOrderID)
 			if err == nil && deliveryOrder != nil {
@@ -875,4 +902,37 @@ func (s *DeliveryService) checkAllRequestsDone(ctx context.Context, deliveryOrde
 			log.Printf("[DELIVERY] All requests rejected/expired for delivery_order %d, marked no_rider_found", deliveryOrderID)
 		}
 	}
+}
+
+// notifyRiderReferral tells restaurant-service that a rider completed a
+// delivery, so the referral domain can decide whether it qualifies a referral.
+//
+// Everything here is best-effort and non-blocking. The delivery has already
+// been committed by the time this runs; a referral is worth strictly less than
+// a delivery, so no failure in this path may affect the rider's order.
+//
+// Restaurant-owned deliveries are included deliberately: the rider genuinely
+// completed a delivery, which is what the referral rule is about, even though
+// the platform pays no delivery fee for it.
+func (s *DeliveryService) notifyRiderReferral(ctx context.Context, riderID string, orderID int) {
+	if !s.riderReferralEnabled || s.restaurantCli == nil || riderID == "" {
+		return
+	}
+
+	completed, err := s.deliveryRepo.CountCompletedDeliveries(ctx, riderID)
+	if err != nil {
+		// Without a trustworthy count the referral rule cannot be evaluated
+		// correctly, and guessing could pay out early. Skip this delivery and
+		// let the next one carry the correct count.
+		log.Printf("[DELIVERY] Referral callback skipped for order %d: delivery count failed: %v", orderID, err)
+		return
+	}
+
+	s.restaurantCli.NotifyRiderDeliveryCompletedAsync(client.RiderDeliveryCompletedPayload{
+		RiderID: riderID,
+		// Scoped by order so a retry of the same delivery dedupes in the
+		// referral outbox instead of qualifying a referral twice.
+		DeliveryRef:         fmt.Sprintf("order:%d", orderID),
+		CompletedDeliveries: completed,
+	})
 }
