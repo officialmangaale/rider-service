@@ -98,20 +98,41 @@ func (r *OrderRepository) GetOrderByID(ctx context.Context, orderID int) (*model
 	return scanOrder(row)
 }
 
-// GetAvailableOrders returns ready orders without a delivery partner, near the rider's location.
+// availableOrderPredicate is the single definition of "no rider holds this
+// order yet". It is shared by the count and the page query so the two can
+// never disagree and break pagination.
+//
+// Three columns matter, because the two assignment paths write different ones:
+//
+//   - platform acceptance (restaurant-service internal/orders/:id/assign-rider)
+//     sets rider_id, assigned_rider_user_id AND delivery_partner_id
+//   - restaurant-owner assignment (owner/orders/:id/assign-rider) sets
+//     assigned_rider_user_id and delivery_status, but NOT delivery_partner_id
+//
+// Filtering on delivery_partner_id alone therefore left every owner-assigned
+// order sitting in the public pool: other riders kept seeing it, and accepting
+// it only failed later with a conflict from restaurant-service.
+const availableOrderPredicate = `
+		  o.order_status = 'ready'
+		  AND o.order_type = 'DELIVERY'
+		  AND o.delivery_partner_id IS NULL
+		  AND o.rider_id IS NULL
+		  AND COALESCE(o.assigned_rider_user_id, '') = ''
+		  AND COALESCE(o.delivery_status, 'pending') NOT IN
+		      ('rider_assigned', 'picked_up', 'out_for_delivery', 'delivered')`
+
+// GetAvailableOrders returns ready delivery orders that no rider holds yet.
 func (r *OrderRepository) GetAvailableOrders(ctx context.Context, limit, offset int) ([]*models.Order, int64, error) {
-	countQuery := `SELECT COUNT(*) FROM orders WHERE order_status = 'ready' AND delivery_partner_id IS NULL AND order_type = 'DELIVERY'`
+	countQuery := `SELECT COUNT(*) FROM orders o WHERE ` + availableOrderPredicate
 	var total int64
 	if err := r.db.QueryRowContext(ctx, countQuery).Scan(&total); err != nil {
 		return nil, 0, err
 	}
 
 	query := fmt.Sprintf(`SELECT %s %s
-		WHERE o.order_status = 'ready'
-		AND o.delivery_partner_id IS NULL
-		AND o.order_type = 'DELIVERY'
+		WHERE %s
 		ORDER BY o.created_at ASC
-		LIMIT $1 OFFSET $2`, orderSelectColumns, orderFromJoin)
+		LIMIT $1 OFFSET $2`, orderSelectColumns, orderFromJoin, availableOrderPredicate)
 
 	rows, err := r.db.QueryContext(ctx, query, limit, offset)
 	if err != nil {
@@ -127,7 +148,7 @@ func (r *OrderRepository) GetAvailableOrders(ctx context.Context, limit, offset 
 		}
 		orders = append(orders, o)
 	}
-	return orders, total, nil
+	return orders, total, rows.Err()
 }
 
 // GetOrderHistoryForRider returns past delivered/cancelled/failed orders for a rider.
