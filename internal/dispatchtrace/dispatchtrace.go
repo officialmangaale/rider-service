@@ -49,6 +49,14 @@ const (
 	EventOfferExpired         = "dispatch.offer.expired"
 	EventOfferWithdrawn       = "dispatch.offer.withdrawn"
 	EventLocationIndexFailed  = "rider.location.index_failed"
+
+	// Delivery lifecycle after acceptance.
+	EventDeliveryStatusUpdated  = "delivery.status.updated"
+	EventDeliveryStatusRejected = "delivery.status.rejected"
+	EventAssignmentSynced       = "restaurant.assignment.synced"
+	EventAssignmentSyncFailed   = "restaurant.assignment.sync_failed"
+	EventActiveDeliveryReturned = "rider.active_delivery.returned"
+	EventDeliveryReleased       = "delivery.released"
 )
 
 // Reason codes. Bounded: add here, never inline.
@@ -76,6 +84,18 @@ const (
 	ReasonAssignedToOther        = "assigned_to_other_rider"
 	ReasonOfferNotFound          = "offer_not_found"
 	ReasonAcceptFailed           = "accept_failed"
+
+	ReasonDeliveryNotFound      = "delivery_not_found"
+	ReasonNotAssignedRider      = "not_assigned_rider"
+	ReasonInvalidTransition     = "invalid_transition"
+	ReasonAlreadyInStatus       = "already_in_status"
+	ReasonCashNotConfirmed      = "cash_not_confirmed"
+	ReasonOrderNotReady         = "order_not_ready"
+	ReasonAssignmentSyncFailed  = "assignment_sync_failed"
+	ReasonRestaurantRejected    = "restaurant_rejected"
+	ReasonRestaurantUnavailable = "restaurant_unavailable"
+	ReasonStatusWriteFailed     = "status_write_failed"
+	ReasonRestaurantClosedOrder = "restaurant_closed_order"
 )
 
 // Fields are the key/value pairs of one event.

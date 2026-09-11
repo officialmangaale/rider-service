@@ -260,6 +260,123 @@ func (r *DeliveryRepository) GetActiveOrderForRider(ctx context.Context, riderUs
 	return &o, nil
 }
 
+// OrderRiderSnapshot is what the customer-facing `orders` row (owned by
+// restaurant-service) currently says about an order's lifecycle and rider.
+type OrderRiderSnapshot struct {
+	OrderStatus         string
+	AssignedRiderUserID string
+	LegacyRiderID       string
+	DeliveryPartnerID   string
+}
+
+// HasRider reports whether riderID is recorded on the order, under any of the
+// three columns restaurant-service accepts.
+func (s OrderRiderSnapshot) HasRider(riderID string) bool {
+	return riderID != "" &&
+		(s.AssignedRiderUserID == riderID || s.LegacyRiderID == riderID || s.DeliveryPartnerID == riderID)
+}
+
+// GetOrderRiderSnapshot reads the restaurant order's status and recorded
+// rider. Read-only; restaurant-service remains the only writer of `orders`.
+func (r *DeliveryRepository) GetOrderRiderSnapshot(ctx context.Context, orderID int) (OrderRiderSnapshot, error) {
+	var s OrderRiderSnapshot
+	err := r.db.QueryRowContext(ctx,
+		`SELECT LOWER(TRIM(COALESCE(order_status, ''))),
+		        COALESCE(assigned_rider_user_id, ''),
+		        COALESCE(rider_id::text, ''),
+		        COALESCE(delivery_partner_id, '')
+		 FROM orders WHERE order_id = $1`, orderID,
+	).Scan(&s.OrderStatus, &s.AssignedRiderUserID, &s.LegacyRiderID, &s.DeliveryPartnerID)
+	return s, err
+}
+
+// ClosedDelivery is an active delivery whose restaurant order has already
+// ended (the owner completed, cancelled or rejected it).
+type ClosedDelivery struct {
+	DeliveryOrderID int
+	OrderID         int
+	RiderID         string
+	OrderStatus     string
+}
+
+// closedRestaurantStatuses: restaurant order statuses after which a rider can
+// no longer progress the delivery. `delivered` is not here: a rider may still
+// confirm their own delivery of an order the owner marked delivered.
+const closedRestaurantStatuses = `('completed', 'cancelled', 'rejected')`
+
+// FindDeliveriesClosedByRestaurant lists active deliveries whose restaurant
+// order has ended, oldest first.
+func (r *DeliveryRepository) FindDeliveriesClosedByRestaurant(ctx context.Context, limit int) ([]ClosedDelivery, error) {
+	rows, err := r.db.QueryContext(ctx,
+		`SELECT d.delivery_order_id, d.order_id,
+		        COALESCE(NULLIF(d.assigned_rider_id, ''), d.rider_user_id, ''),
+		        LOWER(TRIM(COALESCE(o.order_status, '')))
+		 FROM delivery_orders d
+		 JOIN orders o ON o.order_id = d.order_id
+		 WHERE d.is_deleted = FALSE
+		   AND d.delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
+		   AND LOWER(TRIM(COALESCE(o.order_status, ''))) IN `+closedRestaurantStatuses+`
+		 ORDER BY d.updated_at ASC
+		 LIMIT $1`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []ClosedDelivery
+	for rows.Next() {
+		var c ClosedDelivery
+		if err := rows.Scan(&c.DeliveryOrderID, &c.OrderID, &c.RiderID, &c.OrderStatus); err != nil {
+			return nil, err
+		}
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// ReleaseClosedDelivery ends an active delivery whose restaurant order has
+// ended: the delivery becomes cancelled (no payout is recorded) and the rider
+// is free for new offers. Guarded, so it is a no-op if the delivery moved on
+// meanwhile. Returns whether it released anything.
+func (r *DeliveryRepository) ReleaseClosedDelivery(ctx context.Context, c ClosedDelivery) (bool, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback()
+
+	var previous string
+	err = tx.QueryRowContext(ctx,
+		`SELECT delivery_status FROM delivery_orders
+		 WHERE delivery_order_id = $1
+		   AND delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
+		 FOR UPDATE`, c.DeliveryOrderID).Scan(&previous)
+	if err == sql.ErrNoRows {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`UPDATE delivery_orders SET delivery_status = 'cancelled', updated_at = NOW() WHERE delivery_order_id = $1`,
+		c.DeliveryOrderID); err != nil {
+		return false, err
+	}
+	if _, err := tx.ExecContext(ctx,
+		`INSERT INTO delivery_status_history (order_id, from_status, to_status, changed_by, metadata)
+		 VALUES ($1, $2, 'cancelled', NULL, jsonb_build_object('reason', 'restaurant_closed_order', 'restaurant_status', $3::text))`,
+		c.OrderID, previous, c.OrderStatus); err != nil {
+		return false, err
+	}
+	if c.RiderID != "" {
+		if _, err := tx.ExecContext(ctx,
+			`UPDATE rider_availability SET is_available = true, current_order_id = NULL, updated_at = NOW()
+			 WHERE rider_id = $1 AND current_order_id = $2`, c.RiderID, c.OrderID); err != nil {
+			return false, err
+		}
+	}
+	return true, tx.Commit()
+}
+
 func (r *DeliveryRepository) GetRestaurantContact(ctx context.Context, restaurantID int) (string, string, error) {
 	var name, phone string
 	err := r.db.QueryRowContext(ctx,

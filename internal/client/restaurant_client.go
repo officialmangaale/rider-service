@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -37,14 +39,50 @@ type DeliveryStatusPayload struct {
 }
 
 // NewRestaurantClient creates a new RestaurantClient.
+//
+// Trailing slashes are trimmed from baseURL. Production configured
+// "https://restaurant-prod.mangaale.com/", so every callback went to
+// "//internal/orders/…", which restaurant-service's router answers with 404:
+// the rider was never recorded on the customer's order and every pickup failed.
 func NewRestaurantClient(baseURL, token string) *RestaurantClient {
 	return &RestaurantClient{
-		baseURL: baseURL,
+		baseURL: strings.TrimRight(strings.TrimSpace(baseURL), "/"),
 		token:   token,
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
 	}
+}
+
+// CallbackError is a non-2xx answer from restaurant-service. Message is that
+// service's own `message` field (fixed phrases and status names, no personal
+// data), so callers can log and surface why a callback was refused.
+type CallbackError struct {
+	StatusCode int
+	OrderID    int
+	Message    string
+}
+
+func (e *CallbackError) Error() string {
+	if e.Message == "" {
+		return fmt.Sprintf("restaurant-service returned status %d for order %d", e.StatusCode, e.OrderID)
+	}
+	return fmt.Sprintf("restaurant-service returned status %d for order %d: %s", e.StatusCode, e.OrderID, e.Message)
+}
+
+// maxCallbackMessage bounds what is kept from a refusal body.
+const maxCallbackMessage = 160
+
+func callbackError(resp *http.Response, orderID int) *CallbackError {
+	var body struct {
+		Message string `json:"message"`
+	}
+	_ = json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&body)
+	msg := strings.Join(strings.Fields(body.Message), " ")
+	if len(msg) > maxCallbackMessage {
+		msg = msg[:maxCallbackMessage]
+	}
+	return &CallbackError{StatusCode: resp.StatusCode, OrderID: orderID, Message: msg}
 }
 
 // NotifyRiderAssigned calls POST {baseURL}/internal/orders/{orderId}/assign-rider
@@ -80,7 +118,7 @@ func (c *RestaurantClient) NotifyRiderAssigned(orderID int, payload AssignRiderP
 		return nil
 	}
 
-	return fmt.Errorf("restaurant-service returned status %d for order %d", resp.StatusCode, orderID)
+	return callbackError(resp, orderID)
 }
 
 // NotifyRiderAssignedAsync calls the callback asynchronously with retry.
@@ -131,7 +169,7 @@ func (c *RestaurantClient) NotifyDeliveryStatusUpdate(orderID int, payload Deliv
 		return nil
 	}
 
-	return fmt.Errorf("restaurant-service returned status %d for order %d", resp.StatusCode, orderID)
+	return callbackError(resp, orderID)
 }
 
 // NotifyDeliveryStatusUpdateAsync calls the callback asynchronously with retry.

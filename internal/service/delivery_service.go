@@ -8,6 +8,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	dispatchcache "github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/cache"
@@ -38,6 +39,10 @@ type DeliveryService struct {
 	// False by default, so a deployment that has not opted in behaves exactly
 	// as it did before the referral programme existed.
 	riderReferralEnabled bool
+
+	// background tracks fire-and-forget work (acceptance-time assignment
+	// sync) so tests can wait for it; production never waits.
+	background sync.WaitGroup
 }
 
 // SetRiderReferralEnabled turns the rider-referral qualification callback on.
@@ -980,8 +985,10 @@ func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, ride
 		},
 	})
 
-	// Callback to restaurant-service
-	s.callbackRiderAssigned(riderID, req.OrderID)
+	// Record the rider on restaurant-service's order, which is what the
+	// customer app reads. If this never lands, the next status update retries
+	// it synchronously (prepareRestaurantTransition).
+	s.syncRiderAssignmentAsync(req.OrderID, riderID, now)
 
 	return deliveryOrder, nil
 }
@@ -1018,8 +1025,10 @@ func (s *DeliveryService) RejectRequest(ctx context.Context, requestID int, ride
 func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int, riderID string, newStatus string, paymentCollected bool, notes string) error {
 	deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID)
 	if err != nil {
-		return fmt.Errorf("delivery order not found")
+		return rejectStatus(orderID, riderID, "", newStatus,
+			ErrCodeDeliveryNotFound, dispatchtrace.ReasonDeliveryNotFound, "delivery order not found", nil)
 	}
+	oldStatus := deliveryOrder.DeliveryStatus
 
 	// Validate rider ownership: check both assigned_rider_id and rider_user_id
 	owns := false
@@ -1030,26 +1039,65 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		owns = true
 	}
 	if !owns {
-		return fmt.Errorf("order not assigned to this rider")
+		return rejectStatus(orderID, riderID, oldStatus, newStatus,
+			ErrCodeNotAssignedRider, dispatchtrace.ReasonNotAssignedRider, "order not assigned to this rider", nil)
 	}
 
-	if !models.IsValidDeliveryTransition(deliveryOrder.DeliveryStatus, newStatus) &&
+	// A retry of the step that already committed (a tap whose response was
+	// lost) succeeds without repeating side effects.
+	if newStatus == oldStatus {
+		dispatchtrace.Emit(dispatchtrace.EventDeliveryStatusUpdated, dispatchtrace.Fields{
+			"order_id":    orderID,
+			"rider_id":    riderID,
+			"from_status": oldStatus,
+			"to_status":   newStatus,
+			"result":      "unchanged",
+			"reason_code": dispatchtrace.ReasonAlreadyInStatus,
+		})
+		return nil
+	}
+
+	// The owner may end an order mid-delivery (complete, cancel, reject).
+	// Nothing the rider does can succeed then; release the rider instead.
+	snap := s.orderSnapshot(ctx, orderID)
+	if snap != nil && restaurantOrderClosed(snap.OrderStatus) {
+		s.releaseClosedDelivery(ctx, repository.ClosedDelivery{
+			DeliveryOrderID: deliveryOrder.DeliveryOrderID,
+			OrderID:         orderID,
+			RiderID:         riderID,
+			OrderStatus:     snap.OrderStatus,
+		})
+		return rejectStatus(orderID, riderID, oldStatus, newStatus,
+			ErrCodeOrderClosed, dispatchtrace.ReasonRestaurantClosedOrder, "order was closed by the restaurant",
+			dispatchtrace.Fields{"restaurant_status": snap.OrderStatus})
+	}
+
+	if !models.IsValidDeliveryTransition(oldStatus, newStatus) &&
 		!isRestaurantOwnedDeliveryTransition(deliveryOrder, newStatus) {
-		return fmt.Errorf("invalid transition from '%s' to '%s'", deliveryOrder.DeliveryStatus, newStatus)
+		return rejectStatus(orderID, riderID, oldStatus, newStatus,
+			ErrCodeInvalidTransition, dispatchtrace.ReasonInvalidTransition,
+			fmt.Sprintf("invalid transition from '%s' to '%s'", oldStatus, newStatus),
+			dispatchtrace.Fields{"expected_status": nextDeliveryStatus(deliveryOrder)})
 	}
 
 	// Validate COD payment collection when marking as delivered
 	if newStatus == models.DeliveryStatusDelivered {
 		isCOD := deliveryOrder.PaymentMode == "cod" || deliveryOrder.PaymentMode == "cash"
 		if isCOD && !paymentCollected {
-			return fmt.Errorf("cash collection confirmation required")
+			return rejectStatus(orderID, riderID, oldStatus, newStatus,
+				ErrCodeCashNotConfirmed, dispatchtrace.ReasonCashNotConfirmed, "cash collection confirmation required", nil)
 		}
 	}
 
 	// The restaurant order owns the canonical lifecycle. Commit that transition
 	// first; only then advance this service's delivery projection.
-	switch newStatus {
-	case models.DeliveryStatusPickedUp, models.DeliveryStatusOnTheWay, models.DeliveryStatusDelivered:
+	if requiresRestaurantTransition(newStatus) {
+		if s.restaurantCli == nil {
+			return restaurantTransitionError(deliveryOrder, riderID, newStatus, fmt.Errorf("restaurant-service client not configured"))
+		}
+		if err := s.prepareRestaurantTransition(ctx, deliveryOrder, riderID, newStatus, snap); err != nil {
+			return err
+		}
 		if err := s.restaurantCli.NotifyDeliveryStatusUpdate(orderID, client.DeliveryStatusPayload{
 			OrderID:          orderID,
 			RestaurantID:     deliveryOrder.RestaurantID,
@@ -1058,17 +1106,27 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 			PaymentCollected: paymentCollected,
 			Notes:            notes,
 		}); err != nil {
-			return fmt.Errorf("canonical order transition failed: %w", err)
+			return restaurantTransitionError(deliveryOrder, riderID, newStatus, err)
 		}
+	} else {
+		s.ensureAssignmentRecorded(ctx, deliveryOrder, riderID, snap)
 	}
 
-	oldStatus := deliveryOrder.DeliveryStatus
 	if err := s.deliveryRepo.UpdateDeliveryTimestamp(ctx, nil, deliveryOrder.DeliveryOrderID, newStatus); err != nil {
-		return err
+		return rejectStatus(orderID, riderID, oldStatus, newStatus,
+			ErrCodeStatusWriteFailed, dispatchtrace.ReasonStatusWriteFailed, "failed to save delivery status",
+			dispatchtrace.Fields{"error": dispatchtrace.ErrorText(err)})
 	}
 	_ = s.deliveryRepo.RecordStatusHistory(ctx, nil, deliveryOrder.OrderID, oldStatus, newStatus, riderID)
 
 	log.Printf("[DELIVERY] Order %d status updated to %s by rider %s", orderID, newStatus, riderID)
+	dispatchtrace.Emit(dispatchtrace.EventDeliveryStatusUpdated, dispatchtrace.Fields{
+		"order_id":    orderID,
+		"rider_id":    riderID,
+		"from_status": oldStatus,
+		"to_status":   newStatus,
+		"result":      "ok",
+	})
 
 	isRestaurantOwned := deliveryOrder.RestaurantOwned
 
@@ -1204,43 +1262,6 @@ func (s *DeliveryService) notifyOtherRiders(ctx context.Context, deliveryOrderID
 		}
 	}
 	log.Printf("[DELIVERY] Notified %d other riders about order %d assignment", len(cancelledRiderIDs), orderID)
-}
-
-func (s *DeliveryService) callbackRiderAssigned(riderID string, orderID int) {
-	rider, err := s.riderRepo.GetByID(context.Background(), riderID)
-	if err != nil {
-		log.Printf("[DELIVERY] Failed to get rider %s for callback: %v", riderID, err)
-		return
-	}
-
-	name := ""
-	if rider.FirstName != nil {
-		name = *rider.FirstName
-	}
-	if rider.LastName != nil {
-		name += " " + *rider.LastName
-	}
-	phone := ""
-	if rider.Phone != nil {
-		phone = *rider.Phone
-	}
-	vehicleType := ""
-	if rider.VehicleType != nil {
-		vehicleType = *rider.VehicleType
-	}
-	vehicleNumber := ""
-	if rider.VehicleRegistrationNumber != nil {
-		vehicleNumber = *rider.VehicleRegistrationNumber
-	}
-
-	s.restaurantCli.NotifyRiderAssignedAsync(orderID, client.AssignRiderPayload{
-		RiderID:       riderID,
-		RiderName:     name,
-		RiderPhone:    phone,
-		VehicleType:   vehicleType,
-		VehicleNumber: vehicleNumber,
-		AssignedAt:    time.Now().Format(time.RFC3339),
-	})
 }
 
 func (s *DeliveryService) checkAllRequestsDone(ctx context.Context, deliveryOrderID int) {

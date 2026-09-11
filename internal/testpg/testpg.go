@@ -99,6 +99,81 @@ CREATE TABLE processed_events (
 	is_deleted   boolean NOT NULL DEFAULT false
 );`
 
+// LifecycleSchema adds the tables the post-acceptance lifecycle reads or
+// writes, mirrored from production (information_schema, 2026-09-11): the
+// columns of users that RiderRepository scans, the subset of restaurant-service's
+// orders that rider-service reads, and the two history/earnings tables.
+// Apply it after Open: db.Exec(testpg.LifecycleSchema).
+const LifecycleSchema = `
+CREATE TABLE users (
+	id                          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	user_id                     serial,
+	first_name                  varchar(100),
+	last_name                   varchar(100),
+	email                       varchar(255),
+	phone                       varchar(20),
+	created_at                  timestamp DEFAULT CURRENT_TIMESTAMP,
+	display_name                varchar(255),
+	primary_role                varchar(255),
+	avatar_url                  text,
+	license_number              varchar(100),
+	license_expiry              date,
+	vehicle_type                varchar(50),
+	vehicle_registration_number varchar(50),
+	vehicle_details             jsonb,
+	insurance_details           jsonb,
+	max_carry_capacity_kg       numeric,
+	is_available                boolean DEFAULT false,
+	on_trip                     boolean DEFAULT false,
+	current_lat                 numeric,
+	current_lng                 numeric,
+	last_location_update        timestamp,
+	kyc_verified                boolean DEFAULT false,
+	kyc_data                    jsonb,
+	verification_docs           jsonb,
+	bank_details                jsonb,
+	payout_methods              jsonb,
+	rating_avg                  numeric,
+	rating_count                integer DEFAULT 0,
+	total_deliveries            integer DEFAULT 0,
+	total_orders                integer DEFAULT 0,
+	earnings                    numeric DEFAULT 0.00,
+	status                      varchar(20) DEFAULT 'active',
+	updated_at                  timestamp DEFAULT CURRENT_TIMESTAMP
+);
+CREATE TABLE orders (
+	order_id               serial PRIMARY KEY,
+	restaurant_id          integer NOT NULL,
+	delivery_partner_id    varchar(255),
+	order_status           varchar(50) DEFAULT 'pending',
+	order_type             varchar(20) DEFAULT 'DELIVERY',
+	rider_id               bigint,
+	delivery_status        varchar(50) DEFAULT 'pending',
+	assigned_rider_user_id varchar(100),
+	is_deleted             boolean NOT NULL DEFAULT false
+);
+CREATE TABLE delivery_status_history (
+	id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	order_id    integer NOT NULL,
+	from_status varchar(30),
+	to_status   varchar(30) NOT NULL,
+	changed_by  uuid,
+	metadata    jsonb,
+	created_at  timestamptz NOT NULL DEFAULT now(),
+	is_deleted  boolean NOT NULL DEFAULT false
+);
+CREATE TABLE rider_earnings (
+	id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+	rider_id      uuid NOT NULL,
+	order_id      integer,
+	type          varchar(30) NOT NULL,
+	amount        numeric NOT NULL,
+	description   text,
+	created_at    timestamptz NOT NULL DEFAULT now(),
+	is_deleted    boolean NOT NULL DEFAULT false,
+	reference_key text
+);`
+
 // Open returns a pool whose connections all use a fresh schema holding the
 // dispatch tables. The schema is dropped when the test ends.
 func Open(t *testing.T) *sql.DB {

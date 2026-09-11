@@ -100,6 +100,11 @@ func main() {
 	expiryWorker := worker.NewExpiryWorker(deliveryRepo, hub, dispatchCache, 10*time.Second)
 	expiryWorker.Start()
 
+	// Frees riders whose delivery the restaurant completed/cancelled/rejected,
+	// so they are offered orders again.
+	closedDeliveryWorker := worker.NewClosedDeliveryWorker(deliverySvc, 30*time.Second)
+	closedDeliveryWorker.Start()
+
 	var redispatchWorker *worker.RedispatchWorker
 	if cfg.RedispatchIntervalSeconds > 0 {
 		redispatchCfg := worker.DefaultRedispatchConfig()
@@ -138,6 +143,7 @@ func main() {
 		sqsConsumer.Stop()
 	}
 	expiryWorker.Stop()
+	closedDeliveryWorker.Stop()
 	if redispatchWorker != nil {
 		redispatchWorker.Stop()
 	}

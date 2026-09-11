@@ -15,6 +15,8 @@ type APIResponse struct {
 	Message    string      `json:"message"`
 	Data       interface{} `json:"data,omitempty"`
 	Error      string      `json:"error,omitempty"`
+	// ErrorCode is a stable machine-readable reason (rider app: ApiException.errorCode).
+	ErrorCode string `json:"error_code,omitempty"`
 }
 
 // PaginatedData wraps paginated results.
@@ -48,6 +50,18 @@ func ErrorResponse(c *gin.Context, statusCode int, message string, errDetail str
 		StatusCode: statusCode,
 		Message:    message,
 		Error:      errDetail,
+	})
+}
+
+// ErrorWithCode sends an error with a machine-readable code and optional data.
+func ErrorWithCode(c *gin.Context, statusCode int, message, errorCode string, data interface{}) {
+	c.JSON(statusCode, APIResponse{
+		Status:     "error",
+		StatusCode: statusCode,
+		Message:    message,
+		Error:      errorCode,
+		ErrorCode:  errorCode,
+		Data:       data,
 	})
 }
 

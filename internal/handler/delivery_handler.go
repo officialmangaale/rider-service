@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 	"strconv"
 
@@ -138,8 +139,19 @@ func (h *DeliveryHandler) UpdateDeliveryStatus(c *gin.Context) {
 	}
 
 	if err := h.deliverySvc.UpdateDeliveryStatus(c.Request.Context(), orderID, riderID, req.DeliveryStatus, req.PaymentCollected, req.Notes); err != nil {
-		if err.Error() == "cash collection confirmation required" {
-			dto.ErrorResponse(c, http.StatusBadRequest, "cash collection confirmation required", err.Error())
+		var statusErr *service.DeliveryStatusError
+		if errors.As(err, &statusErr) {
+			// HTTP codes unchanged (older app builds refresh on 400/409);
+			// error_code carries the reason.
+			code := http.StatusConflict
+			if statusErr.Code == service.ErrCodeCashNotConfirmed {
+				code = http.StatusBadRequest
+			}
+			dto.ErrorWithCode(c, code, statusErr.Message, statusErr.Code, gin.H{
+				"order_id":         orderID,
+				"current_status":   statusErr.CurrentStatus,
+				"requested_status": req.DeliveryStatus,
+			})
 			return
 		}
 		dto.Conflict(c, err.Error())

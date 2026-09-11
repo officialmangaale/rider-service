@@ -9,6 +9,7 @@ import (
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/constants"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 )
@@ -56,7 +57,24 @@ func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*mod
 		deliveryOrder, err := s.deliveryRepo.GetActiveOrderForRider(ctx, riderID)
 		if err == nil {
 			debug.Logf("active order lookup source=delivery_orders rider_id=%s order_id=%d status=%s", riderID, deliveryOrder.OrderID, deliveryOrder.DeliveryStatus)
-			return activeOrderFromDeliveryOrder(deliveryOrder), nil
+			active := activeOrderFromDeliveryOrder(deliveryOrder)
+			var snapshot *repository.OrderRiderSnapshot
+			if snap, snapErr := s.deliveryRepo.GetOrderRiderSnapshot(ctx, deliveryOrder.OrderID); snapErr == nil {
+				if restaurantOrderClosed(snap.OrderStatus) {
+					// The restaurant ended this order; it is not the rider's to
+					// act on. ClosedDeliveryWorker frees the rider shortly.
+					debug.Logf("active order hidden: restaurant closed order_id=%d status=%s", deliveryOrder.OrderID, snap.OrderStatus)
+					return nil, sql.ErrNoRows
+				}
+				snapshot = &snap
+				active.RestaurantOrderStatus = snap.OrderStatus
+				ready := restaurantReadyForPickup(snap.OrderStatus)
+				active.PickupReady = &ready
+			}
+			fields := activeDeliveryFields(deliveryOrder, snapshot)
+			fields["rider_id"] = riderID
+			dispatchtrace.Emit(dispatchtrace.EventActiveDeliveryReturned, fields)
+			return active, nil
 		}
 		if err != sql.ErrNoRows {
 			return nil, err
@@ -102,21 +120,27 @@ func activeOrderFromDeliveryOrder(order *models.DeliveryOrder) *models.ActiveOrd
 		RestaurantID:    order.RestaurantID,
 		RestaurantName:  order.RestaurantName,
 		RestaurantPhone: order.RestaurantPhone,
-		PickupAddress:   order.PickupAddress,
-		DeliveryAddress: order.DropAddress,
-		DropAddress:     order.DropAddress,
-		PickupLatitude:  &pickupLat,
-		PickupLongitude: &pickupLng,
-		DropLatitude:    &dropLat,
-		DropLongitude:   &dropLng,
-		Status:          order.DeliveryStatus,
-		DeliveryStatus:  order.DeliveryStatus,
-		PaymentMethod:   order.PaymentMode,
-		Amount:          order.Amount,
-		AmountToCollect: order.Amount,
-		AssignmentType:  assignmentType,
-		RestaurantOwned: order.RestaurantOwned,
-		AssignedAt:      order.AssignedAt,
+		// The assigned rider needs the customer to hand over the order; the
+		// shared-order path below has always sent these.
+		CustomerName:       order.CustomerName,
+		CustomerPhone:      order.CustomerPhone,
+		ItemsSummary:       order.ItemsSummary,
+		PickupAddress:      order.PickupAddress,
+		DeliveryAddress:    order.DropAddress,
+		DropAddress:        order.DropAddress,
+		PickupLatitude:     &pickupLat,
+		PickupLongitude:    &pickupLng,
+		DropLatitude:       &dropLat,
+		DropLongitude:      &dropLng,
+		Status:             order.DeliveryStatus,
+		DeliveryStatus:     order.DeliveryStatus,
+		NextDeliveryStatus: nextDeliveryStatus(order),
+		PaymentMethod:      order.PaymentMode,
+		Amount:             order.Amount,
+		AmountToCollect:    order.Amount,
+		AssignmentType:     assignmentType,
+		RestaurantOwned:    order.RestaurantOwned,
+		AssignedAt:         order.AssignedAt,
 	}
 }
 

@@ -105,6 +105,15 @@ type ActiveOrder struct {
 	RestaurantOwned   bool       `json:"restaurant_owned"`
 	AssignedAt        *time.Time `json:"assigned_at,omitempty"`
 	EstimatedDelivery *time.Time `json:"estimated_delivery_time,omitempty"`
+	ItemsSummary      string     `json:"items_summary,omitempty"`
+
+	// RestaurantOrderStatus is the canonical order status (restaurant-service).
+	// PickupReady says whether the kitchen has released the order, i.e. whether
+	// "picked up" can succeed now; nil when unknown. NextDeliveryStatus is the
+	// single valid next rider step ("" when none).
+	RestaurantOrderStatus string `json:"restaurant_order_status,omitempty"`
+	PickupReady           *bool  `json:"pickup_ready,omitempty"`
+	NextDeliveryStatus    string `json:"next_delivery_status,omitempty"`
 }
 
 // DeliveryAssignment represents a row from delivery_assignments.
