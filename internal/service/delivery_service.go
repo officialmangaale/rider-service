@@ -151,9 +151,23 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		}
 	}
 
-	// 4. Check if restaurant has its own active riders — if so, skip platform broadcast
+	// 4. Own-rider hold.
+	//
+	// restaurant-service is the authority on whether an order waits for the
+	// restaurant's own riders. It checks that one is actually live, and either
+	// withholds the event entirely or sends an explicit delivery_mode=platform.
+	// This service therefore dispatches everything it receives, except an
+	// explicitly restaurant-owned event, which it re-checks defensively.
+	//
+	// An EMPTY mode dispatches. It used to trigger the own-rider check too, but
+	// that check never ran: its query compared a varchar with a uuid and failed
+	// on every call, and the error path fell through to dispatch. So an empty
+	// mode has always dispatched in practice — 94% of delivery orders carry
+	// one. Making the check succeed for them would have started holding orders
+	// at any restaurant with an online own rider, including restaurants whose
+	// owners were never expecting to assign one.
 	deliveryMode := strings.ToLower(strings.TrimSpace(evt.DeliveryMode))
-	if deliveryMode == "restaurant_own_rider" || deliveryMode == "restaurant_owned" || deliveryMode == "" {
+	if requiresOwnRiderCheck(deliveryMode) {
 		hasOwnRiders, err := s.riderRepo.HasActiveRestaurantOwnRiders(ctx, evt.RestaurantID)
 		if err != nil {
 			log.Printf("[DELIVERY] Failed to check restaurant_riders for restaurant %d: %v", evt.RestaurantID, err)
@@ -935,4 +949,19 @@ func (s *DeliveryService) notifyRiderReferral(ctx context.Context, riderID strin
 		DeliveryRef:         fmt.Sprintf("order:%d", orderID),
 		CompletedDeliveries: completed,
 	})
+}
+
+// requiresOwnRiderCheck reports whether an ORDER_PLACED event must be
+// re-checked for a live own rider before platform dispatch.
+//
+// Only an explicitly restaurant-owned event is. Everything else — including an
+// empty mode — dispatches: restaurant-service has already decided, and an empty
+// mode has always dispatched in practice (see the comment at the call site).
+func requiresOwnRiderCheck(deliveryMode string) bool {
+	switch strings.ToLower(strings.TrimSpace(deliveryMode)) {
+	case "restaurant_own_rider", "restaurant_owned":
+		return true
+	default:
+		return false
+	}
 }

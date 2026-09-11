@@ -259,22 +259,44 @@ func (r *RiderRepository) GetRestaurantsForRider(ctx context.Context, riderUserI
 	return linked, rows.Err()
 }
 
-// HasActiveRestaurantOwnRiders checks if a restaurant has active restaurant-owned riders.
+// OwnRiderLivenessInterval is how recently a rider must have reported a
+// location to count as online. It deliberately equals the window in this
+// service's own dispatch query (delivery_repo.go), and restaurant-service's
+// RiderLivenessWindow — all three must agree.
+const OwnRiderLivenessInterval = "5 minutes"
+
+// HasActiveRestaurantOwnRiders reports whether the restaurant has an own rider
+// who could take an order right now.
+//
+// "Could take an order" is exactly the definition this service's dispatch
+// query uses — online, available, not carrying an order, and a location
+// reported within OwnRiderLivenessInterval — plus the rider account being
+// active. It is deliberately not users.is_available: that flag never expires,
+// so riders who closed the app months ago still read as available.
+//
+// This previously joined `rr.rider_user_id = u.id`, comparing a varchar with a
+// uuid, which Postgres rejects. The query failed on every call and the caller
+// fell through to platform dispatch, so the check never held an order.
 func (r *RiderRepository) HasActiveRestaurantOwnRiders(ctx context.Context, restaurantID int) (bool, error) {
 	query := `SELECT EXISTS(
 		SELECT 1
 		FROM restaurant_riders rr
-		JOIN users u ON rr.rider_user_id = u.id
+		JOIN rider_availability ra ON ra.rider_id = rr.rider_user_id
+		JOIN rider_locations   rl ON rl.rider_id = rr.rider_user_id
+		JOIN users u ON u.id::text = rr.rider_user_id
 		WHERE rr.restaurant_id = $1
 		  AND rr.is_active = true
 		  AND COALESCE(rr.status, 'active') = 'active'
-		  AND COALESCE(u.is_available, false) = true
-		  AND COALESCE(u.on_trip, false) = false
 		  AND COALESCE(u.status, 'active') = 'active'
+		  AND ra.is_online = true
+		  AND ra.is_available = true
+		  AND ra.current_order_id IS NULL
+		  AND COALESCE(ra.is_deleted, false) = false
+		  AND COALESCE(rl.is_deleted, false) = false
+		  AND rl.last_updated_at >= NOW() - INTERVAL '` + OwnRiderLivenessInterval + `'
 	)`
 	var exists bool
-	err := r.db.QueryRowContext(ctx, query, restaurantID).Scan(&exists)
-	if err != nil {
+	if err := r.db.QueryRowContext(ctx, query, restaurantID).Scan(&exists); err != nil {
 		return false, err
 	}
 	return exists, nil
