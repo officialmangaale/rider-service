@@ -180,38 +180,21 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		log.Printf("[DELIVERY] Platform dispatch requested for order %d (delivery_mode=%s)", evt.OrderID, deliveryMode)
 	}
 
-	// 5. Find nearest platform riders. Redis GEO is the fast path; SQL remains
-	// the durable fallback while Redis warms up or if it is unavailable.
-	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
-		if err := s.dispatchCache.SetPendingOrder(ctx, evt.OrderID, s.requestExpiry); err != nil {
-			log.Printf("[DELIVERY] Redis pending order TTL failed order_id=%d err=%v", evt.OrderID, err)
+	// 5. Find nearest platform riders.
+	s.markPendingInCache(ctx, evt.OrderID)
+	riders, err := s.findOfferableRiders(ctx, deliveryOrder.DeliveryOrderID, evt.OrderID, evt.Pickup.Latitude, evt.Pickup.Longitude)
+	if err != nil {
+		log.Printf("[DELIVERY] Nearest rider search failed for order %d: %v", evt.OrderID, err)
+		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
+		if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+			s.dispatchCache.ClearPendingOrder(ctx, evt.OrderID)
 		}
-	}
-	var riders []models.NearbyRider
-	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
-		redisRiders, redisErr := s.dispatchCache.FindNearestRiders(ctx, evt.Pickup.Latitude, evt.Pickup.Longitude, s.searchRadiusKm, s.maxRiders)
-		if redisErr != nil {
-			log.Printf("[DELIVERY] Redis GEO search failed order_id=%d radius_km=%.1f err=%v; falling back to SQL", evt.OrderID, s.searchRadiusKm, redisErr)
-		} else if len(redisRiders) > 0 {
-			riders = redisRiders
-			log.Printf("[DELIVERY] Redis GEO selected %d riders for order %d radius_km=%.1f", len(riders), evt.OrderID, s.searchRadiusKm)
-		} else {
-			log.Printf("[DELIVERY] Redis GEO found no eligible riders for order %d radius_km=%.1f; falling back to SQL", evt.OrderID, s.searchRadiusKm)
-		}
-	}
-	if len(riders) == 0 {
-		riders, err = s.deliveryRepo.FindNearestRiders(ctx, evt.Pickup.Latitude, evt.Pickup.Longitude, s.searchRadiusKm, s.maxRiders)
-		if err != nil {
-			log.Printf("[DELIVERY] Nearest rider search failed for order %d: %v", evt.OrderID, err)
-			_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
-			if s.dispatchCache != nil && s.dispatchCache.Enabled() {
-				s.dispatchCache.ClearPendingOrder(ctx, evt.OrderID)
-			}
-			return nil // don't crash consumer
-		}
+		return nil // don't crash consumer
 	}
 
 	if len(riders) == 0 {
+		// Not final: RedispatchWorker offers the order again once a rider
+		// becomes eligible, for as long as the restaurant still wants one.
 		s.logEligibilitySummary(ctx, evt)
 		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
 		s.hub.SendToOrder(strconv.Itoa(evt.OrderID), ws.WSMessage{
@@ -229,13 +212,95 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	log.Printf("[DELIVERY] Found %d nearby riders for order %d", len(riders), evt.OrderID)
 
 	// 6. Create requests and notify platform riders
-	expiresAt := time.Now().Add(s.requestExpiry)
+	s.sendOffers(ctx, deliveryOrder, riders)
+
+	return nil
+}
+
+// markPendingInCache records the order as awaiting a rider in Redis. It is
+// informational only; the acceptance lock does not depend on it.
+func (s *DeliveryService) markPendingInCache(ctx context.Context, orderID int) {
+	if s.dispatchCache == nil || !s.dispatchCache.Enabled() {
+		return
+	}
+	if err := s.dispatchCache.SetPendingOrder(ctx, orderID, s.requestExpiry); err != nil {
+		log.Printf("[DELIVERY] Redis pending order TTL failed order_id=%d err=%v", orderID, err)
+	}
+}
+
+// findOfferableRiders returns the nearest eligible platform riders for a
+// pickup point, minus any rider who has already declined this delivery order.
+//
+// Redis GEO is the fast path; SQL remains the durable fallback while Redis
+// warms up or if it is unavailable. An error is returned only when the SQL
+// search itself fails.
+func (s *DeliveryService) findOfferableRiders(ctx context.Context, deliveryOrderID, orderID int, pickupLat, pickupLng float64) ([]models.NearbyRider, error) {
+	// A declined rider is dropped after the search, so ask for that many more
+	// to keep up to maxRiders offers. A first dispatch has no declines, so it
+	// behaves exactly as before.
+	declined, err := s.deliveryRepo.DeclinedRiderIDs(ctx, deliveryOrderID)
+	if err != nil {
+		// Offering to a rider who declined is a nuisance; not offering at all
+		// strands the order. Carry on, but say so.
+		log.Printf("[DELIVERY] Declined-rider lookup failed order_id=%d err=%v; offering without the exclusion", orderID, err)
+		declined = nil
+	}
+	limit := s.maxRiders + len(declined)
+
+	var riders []models.NearbyRider
+	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
+		redisRiders, redisErr := s.dispatchCache.FindNearestRiders(ctx, pickupLat, pickupLng, s.searchRadiusKm, limit)
+		if redisErr != nil {
+			log.Printf("[DELIVERY] Redis GEO search failed order_id=%d radius_km=%.1f err=%v; falling back to SQL", orderID, s.searchRadiusKm, redisErr)
+		} else if riders = excludeDeclinedRiders(redisRiders, declined, s.maxRiders); len(riders) > 0 {
+			log.Printf("[DELIVERY] Redis GEO selected %d riders for order %d radius_km=%.1f", len(riders), orderID, s.searchRadiusKm)
+		} else {
+			log.Printf("[DELIVERY] Redis GEO found no eligible riders for order %d radius_km=%.1f; falling back to SQL", orderID, s.searchRadiusKm)
+		}
+	}
+	if len(riders) == 0 {
+		sqlRiders, err := s.deliveryRepo.FindNearestRiders(ctx, pickupLat, pickupLng, s.searchRadiusKm, limit)
+		if err != nil {
+			return nil, err
+		}
+		riders = excludeDeclinedRiders(sqlRiders, declined, s.maxRiders)
+	}
+	return riders, nil
+}
+
+// excludeDeclinedRiders drops riders in declined and caps the result at max,
+// keeping the nearest-first order of the input.
+func excludeDeclinedRiders(riders []models.NearbyRider, declined map[string]bool, max int) []models.NearbyRider {
+	out := make([]models.NearbyRider, 0, len(riders))
 	for _, rider := range riders {
-		req, err := s.deliveryRepo.CreateRequest(ctx, deliveryOrder.DeliveryOrderID, evt.OrderID, rider.RiderID, rider.DistanceKm, expiresAt)
+		if declined[rider.RiderID] {
+			continue
+		}
+		if max > 0 && len(out) >= max {
+			break
+		}
+		out = append(out, rider)
+	}
+	return out
+}
+
+// sendOffers creates one request per rider and pushes it over the rider's
+// socket. The request row is the source of truth: a rider without a live
+// socket receives the same offer from GET /riders/order-requests/pending.
+//
+// It returns how many offers were created. CreateRequest refuses to reopen a
+// request that is still pending, so running this twice for the same order
+// cannot double-offer a rider.
+func (s *DeliveryService) sendOffers(ctx context.Context, deliveryOrder *models.DeliveryOrder, riders []models.NearbyRider) int {
+	expiresAt := time.Now().Add(s.requestExpiry)
+	offered := 0
+	for _, rider := range riders {
+		req, err := s.deliveryRepo.CreateRequest(ctx, deliveryOrder.DeliveryOrderID, deliveryOrder.OrderID, rider.RiderID, rider.DistanceKm, expiresAt)
 		if err != nil {
 			log.Printf("[DELIVERY] Failed to create request for rider %s: %v", rider.RiderID, err)
 			continue
 		}
+		offered++
 		log.Printf("[DELIVERY] Request %d sent to rider %s (%.2f km)", req.RequestID, rider.RiderID, rider.DistanceKm)
 
 		// Send WebSocket notification
@@ -246,8 +311,57 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		log.Printf("[DELIVERY] WebSocket request emitted rider_id=%s request_id=%d connected=%t",
 			rider.RiderID, req.RequestID, s.hub.IsRiderConnected(rider.RiderID))
 	}
+	return offered
+}
 
-	return nil
+// RedispatchOrder offers an unmatched platform delivery order to the riders
+// who are eligible now. RedispatchWorker calls it for orders selected by
+// FindRedispatchCandidates.
+//
+// The candidate query is re-checked against the current row through
+// canRedispatch, because a rider may have accepted, or the restaurant assigned
+// its own rider, between the sweep's SELECT and this call.
+//
+// With no eligible rider it writes nothing and returns 0, so a sweep that
+// finds nobody leaves no trace and the next sweep simply tries again.
+func (s *DeliveryService) RedispatchOrder(ctx context.Context, deliveryOrderID int) (int, error) {
+	order, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, deliveryOrderID)
+	if err != nil {
+		return 0, fmt.Errorf("load delivery_order %d: %w", deliveryOrderID, err)
+	}
+	ok, err := s.canRedispatch(ctx, order)
+	if err != nil {
+		return 0, err
+	}
+	if !ok {
+		return 0, nil
+	}
+
+	riders, err := s.findOfferableRiders(ctx, order.DeliveryOrderID, order.OrderID, order.PickupLatitude, order.PickupLongitude)
+	if err != nil {
+		return 0, fmt.Errorf("find riders for order %d: %w", order.OrderID, err)
+	}
+	if len(riders) == 0 {
+		return 0, nil
+	}
+
+	if err := s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, order.DeliveryOrderID, models.DeliveryStatusRiderSearching); err != nil {
+		return 0, fmt.Errorf("reopen delivery_order %d for redispatch: %w", order.DeliveryOrderID, err)
+	}
+	order.DeliveryStatus = models.DeliveryStatusRiderSearching
+	s.markPendingInCache(ctx, order.OrderID)
+
+	offered := s.sendOffers(ctx, order, riders)
+	if offered == 0 {
+		// Every insert failed. Put the status back so it does not claim a
+		// search is running; the failures are already logged per rider.
+		if err := s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, order.DeliveryOrderID, models.DeliveryStatusNoRiderFound); err != nil {
+			log.Printf("[DELIVERY] Could not restore no_rider_found for delivery_order %d: %v", order.DeliveryOrderID, err)
+		}
+		return 0, nil
+	}
+	log.Printf("[DELIVERY] Redispatched order %d to %d rider(s)", order.OrderID, offered)
+	return offered, nil
 }
 
 func canonicalizeOrderPlacedEvent(evt *models.OrderPlacedEvent) error {

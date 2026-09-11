@@ -32,6 +32,11 @@ type Config struct {
 	SearchRadiusKm       float64
 	MaxRidersToNotify    int
 	RequestExpirySeconds int
+
+	// RedispatchIntervalSeconds is how often unmatched platform orders are
+	// offered again. 0 turns re-dispatch off, restoring the old behaviour
+	// where an order that found no rider at dispatch stayed unmatched.
+	RedispatchIntervalSeconds int
 }
 
 // Load reads configuration from environment variables.
@@ -58,6 +63,8 @@ func Load() (*Config, error) {
 		SearchRadiusKm:       getEnvFloat("SEARCH_RADIUS_KM", 5.0),
 		MaxRidersToNotify:    getEnvInt("MAX_RIDERS_TO_NOTIFY", 5),
 		RequestExpirySeconds: getEnvInt("REQUEST_EXPIRY_SECONDS", 30),
+
+		RedispatchIntervalSeconds: getEnvInt("REDISPATCH_INTERVAL_SECONDS", 20),
 	}
 
 	if cfg.DatabaseURL == "" {

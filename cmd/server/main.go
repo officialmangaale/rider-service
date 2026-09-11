@@ -96,6 +96,16 @@ func main() {
 	expiryWorker := worker.NewExpiryWorker(deliveryRepo, hub, dispatchCache, 10*time.Second)
 	expiryWorker.Start()
 
+	var redispatchWorker *worker.RedispatchWorker
+	if cfg.RedispatchIntervalSeconds > 0 {
+		redispatchCfg := worker.DefaultRedispatchConfig()
+		redispatchCfg.Interval = time.Duration(cfg.RedispatchIntervalSeconds) * time.Second
+		redispatchWorker = worker.NewRedispatchWorker(deliveryRepo, deliverySvc, redispatchCfg)
+		redispatchWorker.Start()
+	} else {
+		log.Println("[WARN] REDISPATCH_INTERVAL_SECONDS=0. Orders that find no rider at dispatch will not be offered again.")
+	}
+
 	engine := router.Setup(db, cfg, hub, deliverySvc, restaurantCli)
 
 	srv := &http.Server{
@@ -124,6 +134,9 @@ func main() {
 		sqsConsumer.Stop()
 	}
 	expiryWorker.Stop()
+	if redispatchWorker != nil {
+		redispatchWorker.Stop()
+	}
 
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
