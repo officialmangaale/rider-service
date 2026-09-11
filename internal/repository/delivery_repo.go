@@ -7,6 +7,8 @@ import (
 	"math"
 	"time"
 
+	"github.com/lib/pq"
+
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 )
 
@@ -392,6 +394,24 @@ func (r *DeliveryRepository) GetRequestByID(ctx context.Context, requestID int) 
 	return &req, nil
 }
 
+// LockDeliveryOrderForRequest locks the delivery order an offer belongs to,
+// inside tx. Accepts call it before touching any offer row so that every
+// accept for one order takes its locks in the same order: the delivery order
+// first, then offers. Without it, two riders accepting at once locked their
+// own offers first and then waited on each other's, and PostgreSQL broke the
+// deadlock after deadlock_timeout (1 s) by aborting one of them.
+func (r *DeliveryRepository) LockDeliveryOrderForRequest(ctx context.Context, tx *sql.Tx, requestID int) (int, error) {
+	var deliveryOrderID int
+	err := tx.QueryRowContext(ctx,
+		`SELECT d.delivery_order_id
+		 FROM delivery_orders d
+		 JOIN delivery_order_requests r ON r.delivery_order_id = d.delivery_order_id
+		 WHERE r.request_id = $1
+		 FOR UPDATE OF d`, requestID,
+	).Scan(&deliveryOrderID)
+	return deliveryOrderID, err
+}
+
 func (r *DeliveryRepository) GetRequestByIDForUpdate(ctx context.Context, tx *sql.Tx, requestID int) (*models.DeliveryOrderRequest, error) {
 	var req models.DeliveryOrderRequest
 	err := tx.QueryRowContext(ctx,
@@ -569,28 +589,59 @@ func (r *DeliveryRepository) GetRiderLocation(ctx context.Context, riderID strin
 
 // ===== NEAREST RIDER SEARCH (Haversine) =====
 
-func (r *DeliveryRepository) FindNearestRiders(ctx context.Context, pickupLat, pickupLng, radiusKm float64, maxRiders int) ([]models.NearbyRider, error) {
-	// Haversine formula in SQL. Riders must be online, available, no current order, location updated within 5 min.
-	query := `
-		SELECT rl.rider_id, rl.latitude, rl.longitude,
-			(6371 * acos(
-				LEAST(1.0, cos(radians($1)) * cos(radians(rl.latitude)) * cos(radians(rl.longitude) - radians($2))
-				+ sin(radians($1)) * sin(radians(rl.latitude)))
-			)) AS distance_km
-		FROM rider_locations rl
-		INNER JOIN rider_availability ra ON ra.rider_id = rl.rider_id
-		WHERE ra.is_online = true
-		  AND ra.is_available = true
-		  AND ra.current_order_id IS NULL
-		  AND rl.last_updated_at >= NOW() - INTERVAL '5 minutes'
-		HAVING (6371 * acos(
-				LEAST(1.0, cos(radians($1)) * cos(radians(rl.latitude)) * cos(radians(rl.longitude) - radians($2))
-				+ sin(radians($1)) * sin(radians(rl.latitude)))
-			)) <= $3
+// nearestRidersSQL is the single definition of dispatch eligibility: online,
+// available, no current order, a location fix from the last 5 minutes, and
+// within the radius. Nearest first.
+//
+// The distance is computed in a subquery and filtered in the outer WHERE.
+// It used to be filtered with HAVING and no GROUP BY while selecting plain
+// columns, which PostgreSQL rejects on every call ("column rl.rider_id must
+// appear in the GROUP BY clause"). Every dispatch therefore failed and was
+// recorded as no_rider_found. It must never be "fixed" with a GROUP BY.
+//
+// candidateFilter narrows the inner query (used to re-check Redis hits); it
+// is a fixed string from this file, never caller input.
+func nearestRidersSQL(candidateFilter string) string {
+	return `
+		SELECT rider_id, latitude, longitude, distance_km
+		FROM (
+			SELECT rl.rider_id, rl.latitude, rl.longitude,
+				(6371 * acos(
+					LEAST(1.0, GREATEST(-1.0,
+						cos(radians($1)) * cos(radians(rl.latitude)) * cos(radians(rl.longitude) - radians($2))
+						+ sin(radians($1)) * sin(radians(rl.latitude))))
+				)) AS distance_km
+			FROM rider_locations rl
+			INNER JOIN rider_availability ra ON ra.rider_id = rl.rider_id
+			WHERE ra.is_online = true
+			  AND ra.is_available = true
+			  AND ra.current_order_id IS NULL
+			  AND rl.last_updated_at >= NOW() - INTERVAL '5 minutes'` + candidateFilter + `
+		) eligible_riders
+		WHERE distance_km <= $3
 		ORDER BY distance_km ASC
 		LIMIT $4`
+}
 
-	rows, err := r.db.QueryContext(ctx, query, pickupLat, pickupLng, radiusKm, maxRiders)
+// FindNearestRiders returns up to maxRiders eligible riders nearest the pickup.
+func (r *DeliveryRepository) FindNearestRiders(ctx context.Context, pickupLat, pickupLng, radiusKm float64, maxRiders int) ([]models.NearbyRider, error) {
+	return r.queryNearestRiders(ctx, nearestRidersSQL(""), pickupLat, pickupLng, radiusKm, maxRiders)
+}
+
+// FindNearestRidersAmong applies exactly the FindNearestRiders rules, but only
+// to the given rider ids. The dispatch fast path uses it to re-check Redis
+// hits against PostgreSQL, the source of truth, so a stale Redis entry can
+// never produce an offer.
+func (r *DeliveryRepository) FindNearestRidersAmong(ctx context.Context, pickupLat, pickupLng, radiusKm float64, maxRiders int, riderIDs []string) ([]models.NearbyRider, error) {
+	if len(riderIDs) == 0 {
+		return nil, nil
+	}
+	return r.queryNearestRiders(ctx, nearestRidersSQL(`
+			  AND rl.rider_id = ANY($5)`), pickupLat, pickupLng, radiusKm, maxRiders, pq.Array(riderIDs))
+}
+
+func (r *DeliveryRepository) queryNearestRiders(ctx context.Context, query string, args ...interface{}) ([]models.NearbyRider, error) {
+	rows, err := r.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -605,7 +656,7 @@ func (r *DeliveryRepository) FindNearestRiders(ctx context.Context, pickupLat, p
 		nr.DistanceKm = math.Round(nr.DistanceKm*100) / 100
 		riders = append(riders, nr)
 	}
-	return riders, nil
+	return riders, rows.Err()
 }
 
 func (r *DeliveryRepository) GetRiderEligibilitySummary(

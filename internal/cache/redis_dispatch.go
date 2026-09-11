@@ -4,11 +4,9 @@ import (
 	"context"
 	"fmt"
 	"log"
-	"math"
 	"strings"
 	"time"
 
-	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/redis/go-redis/v9"
 )
 
@@ -105,63 +103,47 @@ func (c *RedisDispatchCache) UpdateRiderAvailability(ctx context.Context, riderI
 	return err
 }
 
-func (c *RedisDispatchCache) FindNearestRiders(ctx context.Context, pickupLat, pickupLng, radiusKm float64, maxRiders int) ([]models.NearbyRider, error) {
+// NearbyCandidateIDs returns riders whose last Redis-indexed location is
+// within radiusKm of the pickup and less than 5 minutes old, nearest first.
+//
+// These are candidates, not eligible riders. Redis availability is written by
+// only some of the paths that change it in PostgreSQL (go-online, accept and
+// delivery do not update it), so it is not consulted here. The caller
+// re-checks every candidate against PostgreSQL with the canonical dispatch
+// rules (DeliveryRepository.FindNearestRidersAmong) before making an offer.
+func (c *RedisDispatchCache) NearbyCandidateIDs(ctx context.Context, pickupLat, pickupLng, radiusKm float64, count int) ([]string, error) {
 	if !c.Enabled() {
 		return nil, nil
 	}
-	if maxRiders <= 0 {
-		maxRiders = 5
+	if count <= 0 {
+		count = 15
 	}
 
-	locations, err := c.client.GeoSearchLocation(ctx, RiderLocationKey, &redis.GeoSearchLocationQuery{
-		GeoSearchQuery: redis.GeoSearchQuery{
-			Longitude:  pickupLng,
-			Latitude:   pickupLat,
-			Radius:     radiusKm,
-			RadiusUnit: "km",
-			Sort:       "ASC",
-			Count:      maxRiders * 3,
-		},
-		WithCoord: true,
-		WithDist:  true,
+	// GeoSearch returns member names only; coordinates are not needed here.
+	names, err := c.client.GeoSearch(ctx, RiderLocationKey, &redis.GeoSearchQuery{
+		Longitude:  pickupLng,
+		Latitude:   pickupLat,
+		Radius:     radiusKm,
+		RadiusUnit: "km",
+		Sort:       "ASC",
+		Count:      count,
 	}).Result()
 	if err != nil {
 		return nil, err
 	}
 
 	now := time.Now().UTC().Unix()
-	out := make([]models.NearbyRider, 0, maxRiders)
-	for _, loc := range locations {
-		riderID := strings.TrimSpace(loc.Name)
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		riderID := strings.TrimSpace(name)
 		if riderID == "" {
-			continue
-		}
-		available, err := c.client.SIsMember(ctx, AvailableRidersKey, riderID).Result()
-		if err != nil || !available {
 			continue
 		}
 		updatedAt, err := c.client.HGet(ctx, locationUpdatedKey, riderID).Int64()
 		if err != nil || now-updatedAt > int64((5*time.Minute).Seconds()) {
 			continue
 		}
-		availability, err := c.client.HGetAll(ctx, riderAvailabilityKey(riderID)).Result()
-		if err != nil {
-			continue
-		}
-		if availability["is_online"] != "true" ||
-			availability["is_available"] != "true" ||
-			strings.TrimSpace(availability["current_order_id"]) != "" {
-			continue
-		}
-		out = append(out, models.NearbyRider{
-			RiderID:    riderID,
-			Latitude:   loc.Latitude,
-			Longitude:  loc.Longitude,
-			DistanceKm: math.Round(loc.Dist*100) / 100,
-		})
-		if len(out) >= maxRiders {
-			break
-		}
+		out = append(out, riderID)
 	}
 	return out, nil
 }

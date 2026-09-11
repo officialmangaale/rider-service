@@ -39,6 +39,8 @@ func Setup(
 	riderSvc := service.NewRiderService(riderRepo, orderRepo, earningsRepo)
 	orderSvc := service.NewOrderService(orderRepo, deliveryRepo, assignmentRepo, riderRepo, earningsRepo, statusHistoryRepo, restaurantCli)
 	locationSvc := service.NewLocationService(riderRepo, locationHistoryRepo)
+	// The app's location route feeds the Redis dispatch index too.
+	locationSvc.SetLocationIndexer(deliverySvc)
 	earningsSvc := service.NewEarningsService(earningsRepo)
 	notifSvc := service.NewNotificationService(notifRepo)
 

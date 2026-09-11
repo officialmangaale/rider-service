@@ -1,16 +1,22 @@
 package ws
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/gin-gonic/gin"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/gorilla/websocket"
+
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
 )
 
 // Hub manages all WebSocket connections for riders and customer tracking.
@@ -33,6 +39,31 @@ type Client struct {
 	isRider  bool
 	send     chan []byte
 	done     chan struct{}
+
+	// Diagnostics only. connID is random and carries no identity; it lets
+	// one connection's open, writes and close be matched in the logs.
+	connID      string
+	openedAt    time.Time
+	closeReason atomic.Value // string, a dispatchtrace reason code
+}
+
+func newConnID() string {
+	b := make([]byte, 6)
+	if _, err := rand.Read(b); err != nil {
+		return "unknown"
+	}
+	return hex.EncodeToString(b)
+}
+
+func (c *Client) setCloseReason(reason string) {
+	c.closeReason.CompareAndSwap(nil, reason)
+}
+
+func (c *Client) closeReasonOr(fallback string) string {
+	if v, ok := c.closeReason.Load().(string); ok && v != "" {
+		return v
+	}
+	return fallback
 }
 
 // WSMessage is the envelope for WebSocket messages.
@@ -69,7 +100,12 @@ func (h *Hub) HandleRiderWS(jwtSecret string) gin.HandlerFunc {
 			}
 		}
 
+		// Rejections are logged with a reason code only: never the token,
+		// the URL or its query string.
 		if tokenStr == "" {
+			dispatchtrace.Emit(dispatchtrace.EventConnectionRejected, dispatchtrace.Fields{
+				"reason_code": dispatchtrace.ReasonTokenMissing,
+			})
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "token required"})
 			return
 		}
@@ -82,6 +118,10 @@ func (h *Hub) HandleRiderWS(jwtSecret string) gin.HandlerFunc {
 			return []byte(jwtSecret), nil
 		})
 		if err != nil || !token.Valid {
+			dispatchtrace.Emit(dispatchtrace.EventConnectionRejected, dispatchtrace.Fields{
+				"reason_code": dispatchtrace.ReasonTokenInvalid,
+				"token_error": jwtErrorClass(err),
+			})
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
@@ -93,6 +133,9 @@ func (h *Hub) HandleRiderWS(jwtSecret string) gin.HandlerFunc {
 		}
 		riderID, _ := claims["sub"].(string)
 		if riderID == "" {
+			dispatchtrace.Emit(dispatchtrace.EventConnectionRejected, dispatchtrace.Fields{
+				"reason_code": dispatchtrace.ReasonMissingSubject,
+			})
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing sub"})
 			return
 		}
@@ -100,6 +143,10 @@ func (h *Hub) HandleRiderWS(jwtSecret string) gin.HandlerFunc {
 		conn, err := h.upgrader.Upgrade(c.Writer, c.Request, nil)
 		if err != nil {
 			log.Printf("[WS] Failed to upgrade rider connection: %v", err)
+			dispatchtrace.Emit(dispatchtrace.EventConnectionRejected, dispatchtrace.Fields{
+				"reason_code": dispatchtrace.ReasonUpgradeFailed,
+				"rider_id":    riderID,
+			})
 			return
 		}
 
@@ -111,10 +158,17 @@ func (h *Hub) HandleRiderWS(jwtSecret string) gin.HandlerFunc {
 			isRider:  true,
 			send:     make(chan []byte, 256),
 			done:     make(chan struct{}),
+			connID:   newConnID(),
+			openedAt: time.Now(),
 		}
 
 		h.addRiderClient(riderID, client)
 		log.Printf("[WS] Rider %s connected", riderID)
+		dispatchtrace.Emit(dispatchtrace.EventConnectionOpened, dispatchtrace.Fields{
+			"rider_id":          riderID,
+			"conn_id":           client.connID,
+			"rider_connections": h.RiderConnectionCount(riderID),
+		})
 
 		go client.writePump()
 		go client.readPump()
@@ -156,23 +210,41 @@ func (h *Hub) HandleOrderTrackingWS() gin.HandlerFunc {
 
 // SendToRider sends a message to a specific rider's WebSocket channel.
 func (h *Hub) SendToRider(riderID string, msg WSMessage) {
+	h.SendToRiderCount(riderID, msg)
+}
+
+// SendToRiderCount is SendToRider, reporting how many live connections the
+// rider had and how many accepted the message into their send buffer. Zero
+// connections means the message reached nobody; the caller decides whether
+// that matters (an offer is still readable through the pending-requests
+// endpoint). A marshal failure returns (0, 0) and is logged.
+func (h *Hub) SendToRiderCount(riderID string, msg WSMessage) (connections, enqueued int) {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("[WS] Failed to marshal rider message: %v", err)
-		return
+		return 0, 0
 	}
 
 	h.mu.RLock()
-	clients := h.riderClients[riderID]
+	clients := append([]*Client(nil), h.riderClients[riderID]...)
 	h.mu.RUnlock()
 
 	for _, c := range clients {
 		select {
 		case c.send <- data:
+			enqueued++
 		default:
 			log.Printf("[WS] Rider %s send buffer full, dropping message", riderID)
 		}
 	}
+	return len(clients), enqueued
+}
+
+// RiderConnectionCount is the number of live sockets for a rider.
+func (h *Hub) RiderConnectionCount(riderID string) int {
+	h.mu.RLock()
+	defer h.mu.RUnlock()
+	return len(h.riderClients[riderID])
 }
 
 // SendToOrder sends a message to all listeners on an order tracking channel.
@@ -254,6 +326,12 @@ func (c *Client) writePump() {
 		if c.isRider {
 			c.hub.removeRiderClient(c.entityID, c)
 			log.Printf("[WS] Rider %s disconnected", c.entityID)
+			dispatchtrace.Emit(dispatchtrace.EventConnectionClosed, dispatchtrace.Fields{
+				"rider_id":    c.entityID,
+				"conn_id":     c.connID,
+				"lifetime":    time.Since(c.openedAt).Round(100 * time.Millisecond),
+				"reason_code": c.closeReasonOr(dispatchtrace.ReasonServerClosed),
+			})
 		} else {
 			c.hub.removeOrderClient(c.entityID, c)
 			log.Printf("[WS] Order %s tracking disconnected", c.entityID)
@@ -269,11 +347,13 @@ func (c *Client) writePump() {
 				return
 			}
 			if err := c.conn.WriteMessage(websocket.TextMessage, msg); err != nil {
+				c.reportWriteFailure("message", err)
 				return
 			}
 		case <-ticker.C:
 			c.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 			if err := c.conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				c.reportWriteFailure("ping", err)
 				return
 			}
 		case <-c.done:
@@ -302,7 +382,43 @@ func (c *Client) readPump() {
 			if websocket.IsUnexpectedCloseError(err, websocket.CloseGoingAway, websocket.CloseNormalClosure) {
 				log.Printf("[WS] Unexpected close on %s: %v", c.channel, err)
 			}
+			c.setCloseReason(dispatchtrace.ReasonPeerClosed)
 			break
 		}
+	}
+}
+
+// reportWriteFailure records why a rider socket write failed. Order-tracking
+// sockets keep their existing, quieter behaviour.
+func (c *Client) reportWriteFailure(kind string, err error) {
+	c.setCloseReason(dispatchtrace.ReasonSocketWriteFailed)
+	if !c.isRider {
+		return
+	}
+	dispatchtrace.Emit(dispatchtrace.EventWriteFailed, dispatchtrace.Fields{
+		"rider_id":    c.entityID,
+		"conn_id":     c.connID,
+		"frame":       kind,
+		"reason_code": dispatchtrace.ReasonSocketWriteFailed,
+		"queue_depth": len(c.send),
+		"error":       dispatchtrace.ErrorText(err),
+	})
+}
+
+// jwtErrorClass names why a token was refused without echoing any of it.
+func jwtErrorClass(err error) string {
+	switch {
+	case err == nil:
+		return "invalid"
+	case errors.Is(err, jwt.ErrTokenExpired):
+		return "expired"
+	case errors.Is(err, jwt.ErrTokenNotValidYet):
+		return "not_valid_yet"
+	case errors.Is(err, jwt.ErrTokenSignatureInvalid), errors.Is(err, jwt.ErrSignatureInvalid):
+		return "bad_signature"
+	case errors.Is(err, jwt.ErrTokenMalformed):
+		return "malformed"
+	default:
+		return "invalid"
 	}
 }

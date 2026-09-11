@@ -15,6 +15,7 @@ import (
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/database"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/router"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/service"
@@ -77,6 +78,9 @@ func main() {
 	// RIDER_REFERRAL_ENABLED unset, delivery completion behaves exactly as it
 	// did before the referral programme existed.
 	deliverySvc.SetRiderReferralEnabled(cfg.RiderReferralEnabled)
+	// Opt-in per-target dispatch trace; off unless DISPATCH_TRACE_UNTIL is a
+	// future time. See docs/rider-offer-investigation/OBSERVABILITY_PLAN.md.
+	deliverySvc.SetTrace(dispatchtrace.LoadTraceFromEnv())
 	if cfg.RiderReferralEnabled {
 		log.Println("[INIT] Rider referral qualification callback enabled")
 	}

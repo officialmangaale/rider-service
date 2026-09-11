@@ -49,6 +49,19 @@ type UpdateLocationRequest struct {
 	Longitude float64  `json:"longitude" binding:"required"`
 	Heading   *float64 `json:"heading"`
 	Speed     *float64 `json:"speed"`
+
+	// Optional diagnostics sent by rider-app's online foreground service.
+	// Older builds omit them. They are informational only and never reject
+	// an update: a malformed value must not cost the rider a location fix.
+	//
+	// recorded_at is deliberately not used for dispatch freshness. Phone
+	// clocks drift by minutes, and a slow clock would push an active rider
+	// toward the 5-minute cutoff; the server's receive time is used instead.
+	AccuracyMeters *float64 `json:"accuracy_meters"`
+	RecordedAt     string   `json:"recorded_at"`
+	Source         string   `json:"source"`
+	AppState       string   `json:"app_state"`
+	Sequence       *int64   `json:"sequence"`
 }
 
 // RejectAssignmentRequest for rejecting an order assignment.

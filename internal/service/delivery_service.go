@@ -13,6 +13,7 @@ import (
 	dispatchcache "github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/cache"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
@@ -29,6 +30,10 @@ type DeliveryService struct {
 	maxRiders      int
 	requestExpiry  time.Duration
 
+	// trace is the opt-in per-target diagnostic mode (dispatchtrace.Trace).
+	// Zero value: off.
+	trace dispatchtrace.Trace
+
 	// riderReferralEnabled gates the referral callback on delivery completion.
 	// False by default, so a deployment that has not opted in behaves exactly
 	// as it did before the referral programme existed.
@@ -41,6 +46,20 @@ type DeliveryService struct {
 // keeps compiling unchanged and the default stays off.
 func (s *DeliveryService) SetRiderReferralEnabled(enabled bool) {
 	s.riderReferralEnabled = enabled
+}
+
+// SetTrace enables the per-target dispatch trace. Tracing is observation
+// only: it never changes which riders are offered an order.
+func (s *DeliveryService) SetTrace(trace dispatchtrace.Trace) {
+	s.trace = trace
+	if trace.RiderID != "" {
+		dispatchtrace.Emit(dispatchtrace.EventTraceConfig, dispatchtrace.Fields{
+			"active":   true,
+			"order_id": trace.OrderID,
+			"rider_id": trace.RiderID,
+			"until":    trace.Until.UTC().Format(time.RFC3339),
+		})
+	}
 }
 
 func NewDeliveryService(
@@ -181,8 +200,16 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	}
 
 	// 5. Find nearest platform riders.
+	dispatchtrace.Emit(dispatchtrace.EventAttemptStarted, dispatchtrace.Fields{
+		"order_id":          evt.OrderID,
+		"delivery_order_id": deliveryOrder.DeliveryOrderID,
+		"event_id":          evt.EventID,
+		"trigger":           "order_event",
+		"delivery_mode":     deliveryMode,
+	})
 	s.markPendingInCache(ctx, evt.OrderID)
 	riders, err := s.findOfferableRiders(ctx, deliveryOrder.DeliveryOrderID, evt.OrderID, evt.Pickup.Latitude, evt.Pickup.Longitude)
+	s.traceEligibility(ctx, "order_event", evt.OrderID, deliveryOrder.DeliveryOrderID, evt.Pickup.Latitude, evt.Pickup.Longitude, riders, err)
 	if err != nil {
 		log.Printf("[DELIVERY] Nearest rider search failed for order %d: %v", evt.OrderID, err)
 		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
@@ -195,7 +222,6 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	if len(riders) == 0 {
 		// Not final: RedispatchWorker offers the order again once a rider
 		// becomes eligible, for as long as the restaurant still wants one.
-		s.logEligibilitySummary(ctx, evt)
 		_ = s.deliveryRepo.UpdateDeliveryStatus(ctx, nil, deliveryOrder.DeliveryOrderID, models.DeliveryStatusNoRiderFound)
 		s.hub.SendToOrder(strconv.Itoa(evt.OrderID), ws.WSMessage{
 			Type: "DELIVERY_STATUS_UPDATED",
@@ -247,25 +273,62 @@ func (s *DeliveryService) findOfferableRiders(ctx context.Context, deliveryOrder
 	}
 	limit := s.maxRiders + len(declined)
 
-	var riders []models.NearbyRider
 	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
-		redisRiders, redisErr := s.dispatchCache.FindNearestRiders(ctx, pickupLat, pickupLng, s.searchRadiusKm, limit)
-		if redisErr != nil {
-			log.Printf("[DELIVERY] Redis GEO search failed order_id=%d radius_km=%.1f err=%v; falling back to SQL", orderID, s.searchRadiusKm, redisErr)
-		} else if riders = excludeDeclinedRiders(redisRiders, declined, s.maxRiders); len(riders) > 0 {
-			log.Printf("[DELIVERY] Redis GEO selected %d riders for order %d radius_km=%.1f", len(riders), orderID, s.searchRadiusKm)
-		} else {
-			log.Printf("[DELIVERY] Redis GEO found no eligible riders for order %d radius_km=%.1f; falling back to SQL", orderID, s.searchRadiusKm)
+		if riders := s.redisCandidateRiders(ctx, orderID, pickupLat, pickupLng, limit, declined); len(riders) >= s.maxRiders {
+			return riders, nil
 		}
 	}
-	if len(riders) == 0 {
-		sqlRiders, err := s.deliveryRepo.FindNearestRiders(ctx, pickupLat, pickupLng, s.searchRadiusKm, limit)
-		if err != nil {
-			return nil, err
-		}
-		riders = excludeDeclinedRiders(sqlRiders, declined, s.maxRiders)
+	// PostgreSQL is the source of truth and the complete search.
+	sqlRiders, err := s.deliveryRepo.FindNearestRiders(ctx, pickupLat, pickupLng, s.searchRadiusKm, limit)
+	if err != nil {
+		return nil, err
 	}
-	return riders, nil
+	return excludeDeclinedRiders(sqlRiders, declined, s.maxRiders), nil
+}
+
+// redisCandidateRiders is the dispatch fast path. Redis GEO proposes nearby
+// riders with a fresh location; PostgreSQL decides which of them are
+// eligible, using the same rules as the full search. Redis data can therefore
+// be stale or partial without ever producing a wrong offer.
+//
+// Its result is used only when it already fills the offer list. Otherwise
+// the caller runs the full SQL search, so a rider missing from Redis (a
+// failed cache write, a flushed cache, a fresh deploy) is never skipped.
+func (s *DeliveryService) redisCandidateRiders(ctx context.Context, orderID int, pickupLat, pickupLng float64, limit int, declined map[string]bool) []models.NearbyRider {
+	fields := dispatchtrace.Fields{"order_id": orderID, "radius_km": s.searchRadiusKm}
+	ids, err := s.dispatchCache.NearbyCandidateIDs(ctx, pickupLat, pickupLng, s.searchRadiusKm, limit*3)
+	if err != nil {
+		fields["result"] = "fallback_sql"
+		fields["reason_code"] = dispatchtrace.ReasonRedisUnavailable
+		fields["error"] = dispatchtrace.ErrorText(err)
+		dispatchtrace.Emit(dispatchtrace.EventRedisSearch, fields)
+		return nil
+	}
+	fields["candidates"] = len(ids)
+	if len(ids) == 0 {
+		fields["result"] = "fallback_sql"
+		fields["reason_code"] = dispatchtrace.ReasonRedisNoCandidates
+		dispatchtrace.Emit(dispatchtrace.EventRedisSearch, fields)
+		return nil
+	}
+	verified, err := s.deliveryRepo.FindNearestRidersAmong(ctx, pickupLat, pickupLng, s.searchRadiusKm, limit, ids)
+	if err != nil {
+		fields["result"] = "fallback_sql"
+		fields["reason_code"] = dispatchtrace.ReasonEligibilityQueryFailed
+		fields["error"] = dispatchtrace.ErrorText(err)
+		dispatchtrace.Emit(dispatchtrace.EventRedisSearch, fields)
+		return nil
+	}
+	riders := excludeDeclinedRiders(verified, declined, s.maxRiders)
+	fields["verified"] = len(riders)
+	if len(riders) >= s.maxRiders {
+		fields["result"] = "used"
+	} else {
+		fields["result"] = "fallback_sql"
+		fields["reason_code"] = dispatchtrace.ReasonRedisTooFewVerified
+	}
+	dispatchtrace.Emit(dispatchtrace.EventRedisSearch, fields)
+	return riders
 }
 
 // excludeDeclinedRiders drops riders in declined and caps the result at max,
@@ -298,18 +361,57 @@ func (s *DeliveryService) sendOffers(ctx context.Context, deliveryOrder *models.
 		req, err := s.deliveryRepo.CreateRequest(ctx, deliveryOrder.DeliveryOrderID, deliveryOrder.OrderID, rider.RiderID, rider.DistanceKm, expiresAt)
 		if err != nil {
 			log.Printf("[DELIVERY] Failed to create request for rider %s: %v", rider.RiderID, err)
+			reason := dispatchtrace.ReasonOfferPersistFailed
+			if errors.Is(err, sql.ErrNoRows) {
+				// ON CONFLICT ... WHERE matched nothing: this rider already
+				// holds a pending offer for the order.
+				reason = dispatchtrace.ReasonOfferNotReopened
+			}
+			dispatchtrace.Emit(dispatchtrace.EventOfferPersistFailed, dispatchtrace.Fields{
+				"order_id":          deliveryOrder.OrderID,
+				"delivery_order_id": deliveryOrder.DeliveryOrderID,
+				"rider_id":          rider.RiderID,
+				"reason_code":       reason,
+				"error":             dispatchtrace.ErrorText(err),
+			})
 			continue
 		}
 		offered++
 		log.Printf("[DELIVERY] Request %d sent to rider %s (%.2f km)", req.RequestID, rider.RiderID, rider.DistanceKm)
+		dispatchtrace.Emit(dispatchtrace.EventOfferPersisted, dispatchtrace.Fields{
+			"order_id":          deliveryOrder.OrderID,
+			"delivery_order_id": deliveryOrder.DeliveryOrderID,
+			"request_id":        req.RequestID,
+			"rider_id":          rider.RiderID,
+			"distance_km":       rider.DistanceKm,
+			"expires_in":        time.Until(expiresAt).Round(time.Second),
+		})
 
 		// Send WebSocket notification
-		s.hub.SendToRider(rider.RiderID, ws.WSMessage{
+		connections, enqueued := s.hub.SendToRiderCount(rider.RiderID, ws.WSMessage{
 			Type: "DELIVERY_ORDER_REQUEST",
 			Data: BuildDeliveryOrderRequestPayload(req, deliveryOrder, rider.DistanceKm, expiresAt),
 		})
 		log.Printf("[DELIVERY] WebSocket request emitted rider_id=%s request_id=%d connected=%t",
-			rider.RiderID, req.RequestID, s.hub.IsRiderConnected(rider.RiderID))
+			rider.RiderID, req.RequestID, connections > 0)
+		publish := dispatchtrace.Fields{
+			"order_id":    deliveryOrder.OrderID,
+			"request_id":  req.RequestID,
+			"rider_id":    rider.RiderID,
+			"connections": connections,
+			"enqueued":    enqueued,
+			"result":      "enqueued",
+		}
+		switch {
+		case connections == 0:
+			// The offer is still delivered by the app's pending-requests poll.
+			publish["result"] = "not_sent"
+			publish["reason_code"] = dispatchtrace.ReasonNoMatchingConnection
+		case enqueued < connections:
+			publish["result"] = "partial"
+			publish["reason_code"] = dispatchtrace.ReasonSocketBackpressure
+		}
+		dispatchtrace.Emit(dispatchtrace.EventOfferPublish, publish)
 	}
 	return offered
 }
@@ -338,6 +440,11 @@ func (s *DeliveryService) RedispatchOrder(ctx context.Context, deliveryOrderID i
 	}
 
 	riders, err := s.findOfferableRiders(ctx, order.DeliveryOrderID, order.OrderID, order.PickupLatitude, order.PickupLongitude)
+	// A sweep repeats every 20 s, so an unchanged outcome is not re-logged;
+	// the worker logs errors, and a found rider or an active trace is logged.
+	if len(riders) > 0 || s.trace.Covers(order.OrderID, time.Now()) {
+		s.traceEligibility(ctx, "redispatch", order.OrderID, order.DeliveryOrderID, order.PickupLatitude, order.PickupLongitude, riders, err)
+	}
 	if err != nil {
 		return 0, fmt.Errorf("find riders for order %d: %w", order.OrderID, err)
 	}
@@ -413,28 +520,80 @@ func nonEmptyString(value *string) bool {
 	return value != nil && strings.TrimSpace(*value) != ""
 }
 
-func (s *DeliveryService) logEligibilitySummary(ctx context.Context, evt *models.OrderPlacedEvent) {
-	summary, err := s.deliveryRepo.GetRiderEligibilitySummary(
-		ctx,
-		evt.Pickup.Latitude,
-		evt.Pickup.Longitude,
-		s.searchRadiusKm,
-	)
-	if err != nil {
-		log.Printf("[DELIVERY] No riders found within %.1f km for order %d; eligibility diagnostics failed: %v",
-			s.searchRadiusKm, evt.OrderID, err)
+// traceEligibility records the outcome of one rider search.
+//
+// A failed search and a search that found nobody both leave the delivery
+// order as no_rider_found, so the log is the only place they differ. The
+// aggregate funnel (from a separate, simpler query) is attached in both
+// cases: when the search failed, it shows how many riders the search would
+// otherwise have been choosing from.
+//
+// With an active target trace, the target rider's per-filter decision is
+// logged as well.
+func (s *DeliveryService) traceEligibility(ctx context.Context, trigger string, orderID, deliveryOrderID int, pickupLat, pickupLng float64, riders []models.NearbyRider, searchErr error) {
+	fields := dispatchtrace.Fields{
+		"order_id":          orderID,
+		"delivery_order_id": deliveryOrderID,
+		"trigger":           trigger,
+		"radius_km":         s.searchRadiusKm,
+		"eligible_count":    len(riders),
+	}
+	event := dispatchtrace.EventEligibilityEvaluated
+	switch {
+	case searchErr != nil:
+		fields["result"] = "error"
+		fields["reason_code"] = dispatchtrace.ReasonEligibilityQueryFailed
+		fields["error"] = dispatchtrace.ErrorText(searchErr)
+	case len(riders) == 0:
+		event = dispatchtrace.EventNoEligibleRiders
+		fields["result"] = "none"
+		fields["reason_code"] = dispatchtrace.ReasonNoEligibleRiders
+	default:
+		fields["result"] = "ok"
+	}
+
+	if searchErr != nil || len(riders) == 0 {
+		summary, err := s.deliveryRepo.GetRiderEligibilitySummary(ctx, pickupLat, pickupLng, s.searchRadiusKm)
+		if err != nil {
+			fields["funnel_error"] = dispatchtrace.ErrorText(err)
+		} else {
+			fields["online"] = summary.OnlineRiders
+			// Riders removed by each filter, in the order the search applies them.
+			fields["rejected_counts"] = map[string]int{
+				"rider_not_available":    summary.OnlineRiders - summary.AvailableRiders,
+				"rider_location_missing": summary.AvailableRiders - summary.RidersWithLocation,
+				"rider_location_stale":   summary.RidersWithLocation - summary.RidersWithFreshGPS,
+				"rider_outside_radius":   summary.RidersWithFreshGPS - summary.RidersWithinRadius,
+			}
+			fields["would_be_eligible"] = summary.RidersWithinRadius
+		}
+	}
+	dispatchtrace.Emit(event, fields)
+
+	if !s.trace.Covers(orderID, time.Now()) {
 		return
 	}
-	log.Printf(
-		"[DELIVERY] No eligible riders for order %d radius_km=%.1f online=%d available=%d with_location=%d fresh_location=%d within_radius=%d",
-		evt.OrderID,
-		s.searchRadiusKm,
-		summary.OnlineRiders,
-		summary.AvailableRiders,
-		summary.RidersWithLocation,
-		summary.RidersWithFreshGPS,
-		summary.RidersWithinRadius,
-	)
+	decision, err := s.deliveryRepo.RiderDecisionVector(ctx, s.trace.RiderID, pickupLat, pickupLng, s.searchRadiusKm)
+	vector := dispatchtrace.Fields{
+		"order_id": orderID,
+		"trigger":  trigger,
+		"rider_id": s.trace.RiderID,
+	}
+	if err != nil {
+		vector["error"] = dispatchtrace.ErrorText(err)
+	} else {
+		for k, v := range decision.Fields() {
+			vector[k] = v
+		}
+		offered := false
+		for _, r := range riders {
+			if r.RiderID == s.trace.RiderID {
+				offered = true
+			}
+		}
+		vector["selected_by_search"] = offered
+	}
+	dispatchtrace.Emit(dispatchtrace.EventTargetRiderDecision, vector)
 }
 
 func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *models.DeliveryOrder, distanceKm float64, expiresAt time.Time) map[string]interface{} {
@@ -557,11 +716,7 @@ func (s *DeliveryService) UpdateRiderLocation(ctx context.Context, riderID strin
 	if err := s.deliveryRepo.UpsertRiderLocation(ctx, riderID, lat, lng); err != nil {
 		return err
 	}
-	if s.dispatchCache != nil && s.dispatchCache.Enabled() {
-		if err := s.dispatchCache.UpdateRiderLocation(ctx, riderID, lat, lng); err != nil {
-			log.Printf("[DELIVERY] Redis rider location update failed rider_id=%s err=%v", riderID, err)
-		}
-	}
+	s.IndexRiderLocation(ctx, riderID, lat, lng)
 
 	// Check if rider has active order → broadcast to customer
 	avail, err := s.deliveryRepo.GetRiderAvailability(ctx, riderID)
@@ -580,6 +735,28 @@ func (s *DeliveryService) UpdateRiderLocation(ctx context.Context, riderID strin
 }
 
 // UpdateRiderAvailability handles POST /riders/availability
+// IndexRiderLocation copies a location that PostgreSQL has already stored
+// into the Redis dispatch index. Both location routes call it after their
+// PostgreSQL write succeeds:
+//
+//	POST /api/v1/location/update  (rider app)  → LocationService.UpdateLocation
+//	POST /api/v1/riders/location               → DeliveryService.UpdateRiderLocation
+//
+// Only /riders/location used to reach Redis, and the app never calls it, so
+// the index stayed empty. Best effort: a Redis failure is logged (without
+// coordinates) and never fails the upload; dispatch falls back to SQL.
+func (s *DeliveryService) IndexRiderLocation(ctx context.Context, riderID string, lat, lng float64) {
+	if s.dispatchCache == nil || !s.dispatchCache.Enabled() {
+		return
+	}
+	if err := s.dispatchCache.UpdateRiderLocation(ctx, riderID, lat, lng); err != nil {
+		dispatchtrace.Emit(dispatchtrace.EventLocationIndexFailed, dispatchtrace.Fields{
+			"rider_id": riderID,
+			"error":    dispatchtrace.ErrorText(err),
+		})
+	}
+}
+
 func (s *DeliveryService) UpdateRiderAvailability(ctx context.Context, riderID string, isOnline, isAvailable bool) error {
 	// If going offline, force unavailable
 	if !isOnline {
@@ -635,11 +812,57 @@ func (s *DeliveryService) GetPendingRequestPayloads(ctx context.Context, riderID
 
 // AcceptRequest handles POST /riders/order-requests/{requestId}/accept with row locking.
 func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, riderID string) (*models.DeliveryOrder, error) {
+	order, err := s.acceptRequest(ctx, requestID, riderID)
+	if err != nil {
+		dispatchtrace.Emit(dispatchtrace.EventOfferAcceptRejected, dispatchtrace.Fields{
+			"request_id":  requestID,
+			"rider_id":    riderID,
+			"reason_code": acceptRejectReason(err),
+		})
+		return nil, err
+	}
+	dispatchtrace.Emit(dispatchtrace.EventOfferAccepted, dispatchtrace.Fields{
+		"order_id":          order.OrderID,
+		"delivery_order_id": order.DeliveryOrderID,
+		"request_id":        requestID,
+		"rider_id":          riderID,
+	})
+	return order, nil
+}
+
+// acceptRejectReason maps acceptRequest's fixed error messages to reason codes.
+func acceptRejectReason(err error) string {
+	msg := err.Error()
+	switch {
+	case strings.HasPrefix(msg, "request not found"):
+		return dispatchtrace.ReasonOfferNotFound
+	case strings.HasPrefix(msg, "request does not belong"):
+		return dispatchtrace.ReasonNotOwner
+	case strings.HasPrefix(msg, "request already responded"):
+		return dispatchtrace.ReasonNotPending
+	case strings.HasPrefix(msg, "request has expired"):
+		return dispatchtrace.ReasonOfferExpired
+	case strings.Contains(msg, "already assigned"):
+		return dispatchtrace.ReasonAlreadyAssigned
+	default:
+		return dispatchtrace.ReasonAcceptFailed
+	}
+}
+
+// acceptRequest holds the accept transaction. Exclusivity comes from locking
+// the request row and from AssignRider's `assigned_rider_id IS NULL` guard.
+func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, riderID string) (*models.DeliveryOrder, error) {
 	tx, err := s.deliveryRepo.BeginTx(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+
+	// Lock order: delivery order, then offer. Concurrent accepts for one
+	// order queue here; the one that waits then sees the order assigned.
+	if _, err := s.deliveryRepo.LockDeliveryOrderForRequest(ctx, tx, requestID); err != nil {
+		return nil, fmt.Errorf("request not found")
+	}
 
 	// Lock the request row
 	req, err := s.deliveryRepo.GetRequestByIDForUpdate(ctx, tx, requestID)
@@ -648,6 +871,11 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 	}
 	if req.RiderID != riderID {
 		return nil, fmt.Errorf("request does not belong to this rider")
+	}
+	if req.Status == models.RequestStatusCancelled {
+		// Offers are cancelled only by CancelOtherRequests, i.e. because
+		// another rider accepted this order first.
+		return nil, fmt.Errorf("order already assigned to another rider")
 	}
 	if req.Status != models.RequestStatusPending {
 		return nil, fmt.Errorf("request already responded to (status: %s)", req.Status)
@@ -710,7 +938,10 @@ func (s *DeliveryService) AcceptRequest(ctx context.Context, requestID int, ride
 	// Cancel other pending requests for same order
 	cancelledRiderIDs, err := s.deliveryRepo.CancelOtherRequests(ctx, tx, req.DeliveryOrderID, requestID)
 	if err != nil {
+		// The transaction is aborted after this; carrying on only produced a
+		// misleading "failed to update rider availability" further down.
 		log.Printf("[DELIVERY] Failed to cancel other requests: %v", err)
+		return nil, fmt.Errorf("failed to withdraw other offers: %w", err)
 	}
 
 	// Set rider busy
@@ -772,6 +1003,11 @@ func (s *DeliveryService) RejectRequest(ctx context.Context, requestID int, ride
 		return err
 	}
 	log.Printf("[DELIVERY] Rider %s rejected request %d for order %d", riderID, requestID, req.OrderID)
+	dispatchtrace.Emit(dispatchtrace.EventOfferDeclined, dispatchtrace.Fields{
+		"order_id":   req.OrderID,
+		"request_id": requestID,
+		"rider_id":   riderID,
+	})
 
 	// Check if all requests are now rejected/expired
 	s.checkAllRequestsDone(ctx, req.DeliveryOrderID)
@@ -954,6 +1190,11 @@ func (s *DeliveryService) notifyOtherRiders(ctx context.Context, deliveryOrderID
 	// Send WS event to riders whose requests were cancelled
 	for _, rID := range cancelledRiderIDs {
 		if rID != acceptedRiderID {
+			dispatchtrace.Emit(dispatchtrace.EventOfferWithdrawn, dispatchtrace.Fields{
+				"order_id":    orderID,
+				"rider_id":    rID,
+				"reason_code": dispatchtrace.ReasonAssignedToOther,
+			})
 			s.hub.SendToRider(rID, ws.WSMessage{
 				Type: "ORDER_ASSIGNED_TO_OTHER_RIDER",
 				Data: map[string]interface{}{

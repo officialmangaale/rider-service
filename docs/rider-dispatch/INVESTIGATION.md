@@ -1,5 +1,14 @@
 # Rider dispatch investigation — order 13286
 
+> **Correction (2026-09-11, later the same day).** The first failed boundary
+> for 13286 was not the stale location. `DeliveryRepository.FindNearestRiders`
+> is invalid SQL (`HAVING` without `GROUP BY`), and PostgreSQL rejects it on
+> every call. No offer could have been created even for a rider with a fresh
+> location. The re-dispatch worker added below calls the same query, and its
+> `sqlmock` tests could not detect this. The stale location and missing
+> re-dispatch described here were real contributing conditions. See
+> `docs/rider-offer-investigation/ROOT_CAUSE.md`.
+
 Date: 2026-09-11. All database access was read-only (`default_transaction_read_only=on`).
 Customer and rider personal data is redacted; the rider is referred to as **R1**
 (user id `c6b4…30c4`).

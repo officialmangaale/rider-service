@@ -7,6 +7,7 @@ import (
 	"time"
 
 	dispatchcache "github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/cache"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
 )
@@ -88,6 +89,12 @@ func (w *ExpiryWorker) processExpirations() {
 			},
 		})
 		log.Printf("[EXPIRY-WORKER] Notified rider %s about expired request %d", req.RiderID, req.RequestID)
+		dispatchtrace.Emit(dispatchtrace.EventOfferExpired, dispatchtrace.Fields{
+			"order_id":    req.OrderID,
+			"request_id":  req.RequestID,
+			"rider_id":    req.RiderID,
+			"reason_code": dispatchtrace.ReasonOfferExpired,
+		})
 	}
 
 	// For each delivery order that had an expired request, check if it needs to transition to 'no_rider_found'
