@@ -149,7 +149,7 @@ func (s *DeliveryService) prepareRestaurantTransition(ctx context.Context, order
 	if order.AssignedAt != nil {
 		assignedAt = *order.AssignedAt
 	}
-	if err := s.syncRiderAssignment(ctx, order.OrderID, riderID, assignedAt, "status_update"); err != nil {
+	if err := s.syncRiderAssignmentOfType(ctx, order.OrderID, riderID, assignedAt, "status_update", order.OrderType); err != nil {
 		return rejectStatus(order.OrderID, riderID, order.DeliveryStatus, newStatus,
 			ErrCodeRestaurantSync, dispatchtrace.ReasonAssignmentSyncFailed,
 			"could not record the rider on the order, please try again",
@@ -169,12 +169,38 @@ func (s *DeliveryService) ensureAssignmentRecorded(ctx context.Context, order *m
 	if order.AssignedAt != nil {
 		assignedAt = *order.AssignedAt
 	}
-	_ = s.syncRiderAssignment(ctx, order.OrderID, riderID, assignedAt, "status_update")
+	_ = s.syncRiderAssignmentOfType(ctx, order.OrderID, riderID, assignedAt, "status_update", order.OrderType)
 }
 
 // syncRiderAssignment records the rider on restaurant-service's order.
 // Idempotent there: the same rider again returns 200.
 func (s *DeliveryService) syncRiderAssignment(ctx context.Context, orderID int, riderID string, assignedAt time.Time, trigger string) error {
+	return s.syncRiderAssignmentOfType(ctx, orderID, riderID, assignedAt, trigger, models.SourceOrderTypeFood)
+}
+
+// syncRiderAssignmentOfType records the rider on the order that actually owns
+// the lifecycle: the restaurant order for food, the grocery order for grocery.
+func (s *DeliveryService) syncRiderAssignmentOfType(ctx context.Context, orderID int, riderID string, assignedAt time.Time, trigger, orderType string) error {
+	if models.NormalizeSourceOrderType(orderType) == models.SourceOrderTypeGrocery {
+		if s.restaurantCli == nil {
+			err := errors.New("restaurant-service client not configured")
+			emitAssignmentSyncFailed(orderID, riderID, trigger, err)
+			return err
+		}
+		payload := s.assignmentPayload(ctx, riderID, assignedAt)
+		if err := s.restaurantCli.NotifyGroceryRiderAssigned(orderID, client.GroceryAssignRiderPayload{
+			RiderID:    riderID,
+			RiderName:  payload.RiderName,
+			RiderPhone: payload.RiderPhone,
+		}); err != nil {
+			emitAssignmentSyncFailed(orderID, riderID, trigger, err)
+			return err
+		}
+		dispatchtrace.Emit(dispatchtrace.EventAssignmentSynced, dispatchtrace.Fields{
+			"order_id": orderID, "rider_id": riderID, "trigger": trigger, "order_type": models.SourceOrderTypeGrocery,
+		})
+		return nil
+	}
 	if s.restaurantCli == nil {
 		err := errors.New("restaurant-service client not configured")
 		emitAssignmentSyncFailed(orderID, riderID, trigger, err)
@@ -255,10 +281,10 @@ var assignmentRetryDelays = []time.Duration{2 * time.Second, 4 * time.Second}
 
 // syncRiderAssignmentAsync runs the acceptance-time sync off the request
 // path. If every attempt fails, the next status update retries synchronously.
-func (s *DeliveryService) syncRiderAssignmentAsync(orderID int, riderID string, assignedAt time.Time) {
+func (s *DeliveryService) syncRiderAssignmentAsync(orderID int, riderID string, assignedAt time.Time, orderType string) {
 	if s.restaurantCli == nil {
 		// Nothing to retry; report it here rather than from a goroutine.
-		_ = s.syncRiderAssignment(context.Background(), orderID, riderID, assignedAt, "accept")
+		_ = s.syncRiderAssignmentOfType(context.Background(), orderID, riderID, assignedAt, "accept", orderType)
 		return
 	}
 	delays := assignmentRetryDelays
@@ -266,7 +292,7 @@ func (s *DeliveryService) syncRiderAssignmentAsync(orderID int, riderID string, 
 	go func() {
 		defer s.background.Done()
 		for attempt := 0; ; attempt++ {
-			err := s.syncRiderAssignment(context.Background(), orderID, riderID, assignedAt, "accept")
+			err := s.syncRiderAssignmentOfType(context.Background(), orderID, riderID, assignedAt, "accept", orderType)
 			if err == nil || !retryableCallback(err) || attempt >= len(delays) {
 				return
 			}

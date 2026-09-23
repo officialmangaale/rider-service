@@ -24,7 +24,7 @@ var deliveryOrderColumns = []string{
 	"amount", "payment_mode", "delivery_status", "assigned_rider_id",
 	"created_at", "updated_at", "assigned_at", "picked_up_at", "delivered_at",
 	"rider_user_id", "assignment_type", "restaurant_owned", "restaurant_name", "restaurant_phone",
-	"customer_name", "customer_phone", "items_summary", "rider_arrived_at",
+	"customer_name", "customer_phone", "items_summary", "rider_arrived_at", "order_type",
 }
 
 func deliveryOrderRow(status string, assignedRider interface{}, restaurantOwned bool) *sqlmock.Rows {
@@ -36,7 +36,7 @@ func deliveryOrderRow(status string, assignedRider interface{}, restaurantOwned 
 		250.0, "cash", status, assignedRider,
 		now, now, nil, nil, nil,
 		nil, "platform", restaurantOwned, "Fateh Cafe", "",
-		"", "", "", nil,
+		"", "", "", nil, "food",
 	)
 }
 

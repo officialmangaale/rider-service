@@ -37,16 +37,21 @@ func (r *DeliveryRepository) IsEventProcessed(ctx context.Context, eventID strin
 	return exists, err
 }
 
-func (r *DeliveryRepository) IsOrderProcessed(ctx context.Context, orderID int) (bool, error) {
+// IsOrderProcessed reports whether an event for this order has been handled.
+// Scoped by order type: a grocery order id and a food order id come from
+// different sequences and can be equal.
+func (r *DeliveryRepository) IsOrderProcessed(ctx context.Context, orderID int, orderType string) (bool, error) {
 	var exists bool
-	err := r.db.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM processed_events WHERE order_id=$1)`, orderID).Scan(&exists)
+	err := r.db.QueryRowContext(ctx,
+		`SELECT EXISTS(SELECT 1 FROM processed_events WHERE order_id=$1 AND COALESCE(order_type, 'food')=$2)`,
+		orderID, models.NormalizeSourceOrderType(orderType)).Scan(&exists)
 	return exists, err
 }
 
-func (r *DeliveryRepository) MarkEventProcessed(ctx context.Context, eventID string, orderID int, eventType string) error {
+func (r *DeliveryRepository) MarkEventProcessed(ctx context.Context, eventID string, orderID int, eventType, orderType string) error {
 	_, err := r.db.ExecContext(ctx,
-		`INSERT INTO processed_events (event_id, order_id, event_type) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
-		eventID, orderID, eventType)
+		`INSERT INTO processed_events (event_id, order_id, event_type, order_type) VALUES ($1,$2,$3,$4) ON CONFLICT DO NOTHING`,
+		eventID, orderID, eventType, models.NormalizeSourceOrderType(orderType))
 	return err
 }
 
@@ -55,9 +60,9 @@ func (r *DeliveryRepository) MarkEventProcessed(ctx context.Context, eventID str
 func (r *DeliveryRepository) CreateDeliveryOrder(ctx context.Context, evt *models.OrderPlacedEvent) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`INSERT INTO delivery_orders (order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assignment_type, restaurant_name, restaurant_phone, customer_name, customer_phone)
-		 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'rider_searching','platform',$12,$13,$14,$15)
-		 ON CONFLICT (order_id) DO UPDATE SET
+		`INSERT INTO delivery_orders (order_id, order_type, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assignment_type, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary)
+		 VALUES ($1,$16,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,'rider_searching','platform',$12,$13,$14,$15,COALESCE($17, ''))
+		 ON CONFLICT (order_type, order_id) DO UPDATE SET
 			restaurant_name = COALESCE(NULLIF(delivery_orders.restaurant_name, ''), EXCLUDED.restaurant_name),
 			restaurant_phone = COALESCE(NULLIF(delivery_orders.restaurant_phone, ''), EXCLUDED.restaurant_phone),
 			customer_name = COALESCE(NULLIF(delivery_orders.customer_name, ''), EXCLUDED.customer_name),
@@ -70,19 +75,20 @@ func (r *DeliveryRepository) CreateDeliveryOrder(ctx context.Context, evt *model
 			drop_address = COALESCE(NULLIF(delivery_orders.drop_address, ''), EXCLUDED.drop_address),
 			amount = CASE WHEN delivery_orders.amount = 0 THEN EXCLUDED.amount ELSE delivery_orders.amount END,
 			payment_mode = COALESCE(NULLIF(delivery_orders.payment_mode, ''), EXCLUDED.payment_mode)
-		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at`,
+		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at, COALESCE(order_type, 'food')`,
 		evt.OrderID, evt.RestaurantID, evt.CustomerID.Int(),
 		evt.Pickup.Latitude, evt.Pickup.Longitude, evt.Pickup.Address,
 		evt.Drop.Latitude, evt.Drop.Longitude, evt.Drop.Address,
 		evt.Amount, evt.PaymentMode, evt.RestaurantName, evt.RestaurantPhone,
 		evt.CustomerName, evt.CustomerPhone,
+		models.NormalizeSourceOrderType(evt.SourceOrderType), evt.ItemsSummary,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
 		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
-		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt, &o.OrderType)
 	if err != nil {
 		return nil, err
 	}
@@ -143,7 +149,7 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 			assigned_at = EXCLUDED.assigned_at,
 			assigned_rider_id = EXCLUDED.rider_user_id,
 			updated_at = NOW()
-		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at`,
+		 RETURNING delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at, COALESCE(order_type, 'food')`,
 		evt.OrderID, evt.RestaurantID, evt.RiderUserID, evt.RestaurantName, evt.RestaurantPhone, evt.AssignedAt,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
@@ -151,25 +157,29 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
 		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
-		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt, &o.OrderType)
 	if err != nil {
 		return nil, err
 	}
 	return &o, nil
 }
 
-func (r *DeliveryRepository) GetDeliveryOrderByOrderID(ctx context.Context, orderID int) (*models.DeliveryOrder, error) {
+// GetDeliveryOrderByOrderID finds the delivery for one source order. orderType
+// is "food" when empty, which is what every caller that predates grocery
+// dispatch means.
+func (r *DeliveryRepository) GetDeliveryOrderByOrderID(ctx context.Context, orderID int, orderType string) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
-		 FROM delivery_orders WHERE order_id=$1`, orderID,
+		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at, COALESCE(order_type, 'food')
+		 FROM delivery_orders WHERE order_id=$1 AND COALESCE(order_type, 'food')=$2`,
+		orderID, models.NormalizeSourceOrderType(orderType),
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
 		&o.DropLatitude, &o.DropLongitude, &o.DropAddress,
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
 		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
-		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt, &o.OrderType)
 	if err != nil {
 		return nil, err
 	}
@@ -179,7 +189,7 @@ func (r *DeliveryRepository) GetDeliveryOrderByOrderID(ctx context.Context, orde
 func (r *DeliveryRepository) GetDeliveryOrderByID(ctx context.Context, deliveryOrderID int) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
+		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at, COALESCE(order_type, 'food')
 		 FROM delivery_orders WHERE delivery_order_id=$1`, deliveryOrderID,
 	).Scan(&o.DeliveryOrderID, &o.OrderID, &o.RestaurantID, &o.CustomerID,
 		&o.PickupLatitude, &o.PickupLongitude, &o.PickupAddress,
@@ -187,7 +197,7 @@ func (r *DeliveryRepository) GetDeliveryOrderByID(ctx context.Context, deliveryO
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
 		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
-		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt, &o.OrderType)
 	if err != nil {
 		return nil, err
 	}
@@ -209,7 +219,7 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 		args = append(args, s)
 	}
 
-	query := fmt.Sprintf(`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
+	query := fmt.Sprintf(`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at, COALESCE(order_type, 'food')
 		 FROM delivery_orders
 		 WHERE (rider_user_id=$1 OR assigned_rider_id=$1)
 		 AND delivery_status IN (%s)
@@ -230,7 +240,7 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 			&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 			&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
 			&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
-			&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt); err != nil {
+			&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt, &o.OrderType); err != nil {
 			return nil, err
 		}
 		orders = append(orders, &o)
@@ -241,7 +251,7 @@ func (r *DeliveryRepository) GetRiderOrders(ctx context.Context, riderUserID str
 func (r *DeliveryRepository) GetActiveOrderForRider(ctx context.Context, riderUserID string) (*models.DeliveryOrder, error) {
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
-		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at
+		`SELECT delivery_order_id, order_id, restaurant_id, customer_id, pickup_latitude, pickup_longitude, pickup_address, drop_latitude, drop_longitude, drop_address, amount, payment_mode, delivery_status, assigned_rider_id, created_at, updated_at, assigned_at, picked_up_at, delivered_at, rider_user_id, assignment_type, restaurant_owned, restaurant_name, restaurant_phone, customer_name, customer_phone, items_summary, rider_arrived_at, COALESCE(order_type, 'food')
 		 FROM delivery_orders
 		 WHERE (rider_user_id=$1 OR assigned_rider_id=$1)
 		 AND delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
@@ -253,7 +263,7 @@ func (r *DeliveryRepository) GetActiveOrderForRider(ctx context.Context, riderUs
 		&o.Amount, &o.PaymentMode, &o.DeliveryStatus, &o.AssignedRiderID,
 		&o.CreatedAt, &o.UpdatedAt, &o.AssignedAt, &o.PickedUpAt, &o.DeliveredAt,
 		&o.RiderUserID, &o.AssignmentType, &o.RestaurantOwned, &o.RestaurantName, &o.RestaurantPhone,
-		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt)
+		&o.CustomerName, &o.CustomerPhone, &o.ItemsSummary, &o.RiderArrivedAt, &o.OrderType)
 	if err != nil {
 		return nil, err
 	}
@@ -450,13 +460,20 @@ func (r *DeliveryRepository) RecordStatusHistory(ctx context.Context, tx *sql.Tx
 	return err
 }
 
-func (r *DeliveryRepository) RecordEarning(ctx context.Context, tx *sql.Tx, riderID string, orderID int, earningType string, amount float64, description string) error {
-	query := `INSERT INTO rider_earnings (rider_id, order_id, type, amount, description) VALUES ($1, $2, $3, $4, $5)`
+// RecordEarning writes one line of a rider's earnings ledger.
+//
+// order_id used to carry a foreign key to orders(order_id). A grocery delivery
+// has no row there, so migration 096 replaced the constraint with order_type
+// plus this call's own validation: the caller has already loaded and checked
+// the delivery order it is paying for.
+func (r *DeliveryRepository) RecordEarning(ctx context.Context, tx *sql.Tx, riderID string, orderID int, earningType string, amount float64, description, orderType string) error {
+	query := `INSERT INTO rider_earnings (rider_id, order_id, type, amount, description, order_type) VALUES ($1, $2, $3, $4, $5, $6)`
+	normalized := models.NormalizeSourceOrderType(orderType)
 	var err error
 	if tx != nil {
-		_, err = tx.ExecContext(ctx, query, riderID, orderID, earningType, amount, description)
+		_, err = tx.ExecContext(ctx, query, riderID, orderID, earningType, amount, description, normalized)
 	} else {
-		_, err = r.db.ExecContext(ctx, query, riderID, orderID, earningType, amount, description)
+		_, err = r.db.ExecContext(ctx, query, riderID, orderID, earningType, amount, description, normalized)
 	}
 	return err
 }

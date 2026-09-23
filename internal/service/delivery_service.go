@@ -107,12 +107,15 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 		}
 		eventProcessed = processed
 	}
-	orderProcessed, err := s.deliveryRepo.IsOrderProcessed(ctx, evt.OrderID)
+	sourceType := models.NormalizeSourceOrderType(evt.SourceOrderType)
+	orderProcessed, err := s.deliveryRepo.IsOrderProcessed(ctx, evt.OrderID, sourceType)
 	if err != nil {
 		return fmt.Errorf("order idempotency check failed: %w", err)
 	}
 
-	if evt.RestaurantName == "" || evt.RestaurantPhone == "" {
+	// A grocery event names its shop; only a food one is enriched from the
+	// restaurants table, which has no row for a grocery merchant.
+	if sourceType == models.SourceOrderTypeFood && (evt.RestaurantName == "" || evt.RestaurantPhone == "") {
 		name, phone, err := s.deliveryRepo.GetRestaurantContact(ctx, evt.RestaurantID)
 		if err != nil {
 			log.Printf("[DELIVERY] Restaurant contact enrichment missing for restaurant %d: %v", evt.RestaurantID, err)
@@ -130,7 +133,7 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	// whose previous rider offers have all expired/rejected.
 	var deliveryOrder *models.DeliveryOrder
 	if !orderProcessed {
-		existing, lookupErr := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, evt.OrderID)
+		existing, lookupErr := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, evt.OrderID, sourceType)
 		switch {
 		case lookupErr == nil:
 			deliveryOrder = existing
@@ -142,7 +145,7 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	}
 	if eventProcessed || orderProcessed {
 		if deliveryOrder == nil {
-			deliveryOrder, err = s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, evt.OrderID)
+			deliveryOrder, err = s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, evt.OrderID, sourceType)
 			if err != nil {
 				return fmt.Errorf("failed to load existing delivery order: %w", err)
 			}
@@ -170,7 +173,7 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 
 	// 3. Mark this event processed after the delivery order is durable.
 	if evt.EventID != "" && !eventProcessed {
-		if err := s.deliveryRepo.MarkEventProcessed(ctx, evt.EventID, evt.OrderID, evt.EventType); err != nil {
+		if err := s.deliveryRepo.MarkEventProcessed(ctx, evt.EventID, evt.OrderID, evt.EventType, sourceType); err != nil {
 			log.Printf("[DELIVERY] Failed to mark event %s processed: %v", evt.EventID, err)
 		}
 	}
@@ -191,7 +194,13 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	// at any restaurant with an online own rider, including restaurants whose
 	// owners were never expecting to assign one.
 	deliveryMode := strings.ToLower(strings.TrimSpace(evt.DeliveryMode))
-	if requiresOwnRiderCheck(deliveryMode) {
+	if sourceType == models.SourceOrderTypeGrocery {
+		// restaurant-service ran the own-rider decision for the shop before
+		// publishing, so a grocery event always means "offer this to Mangaale
+		// riders". Re-checking here would consult restaurant_riders, which
+		// knows nothing about grocery shops.
+		log.Printf("[DELIVERY] Grocery dispatch requested for grocery_order_id=%d merchant_id=%d", evt.OrderID, evt.MerchantID)
+	} else if requiresOwnRiderCheck(deliveryMode) {
 		hasOwnRiders, err := s.riderRepo.HasActiveRestaurantOwnRiders(ctx, evt.RestaurantID)
 		if err != nil {
 			log.Printf("[DELIVERY] Failed to check restaurant_riders for restaurant %d: %v", evt.RestaurantID, err)
@@ -485,10 +494,19 @@ func canonicalizeOrderPlacedEvent(evt *models.OrderPlacedEvent) error {
 		evt.EventType = "ORDER_PLACED"
 	}
 	evt.EventID = strings.TrimSpace(evt.EventID)
-	if evt.EventType == "ORDER_PLACED" && evt.OrderID > 0 {
-		evt.EventID = fmt.Sprintf("%s:%d", evt.EventType, evt.OrderID)
-	} else if evt.EventID == "" && evt.OrderID > 0 {
-		evt.EventID = fmt.Sprintf("%s:%d", evt.EventType, evt.OrderID)
+	// The id is derived from the order so a redelivered message is recognised
+	// whatever id the producer chose. It must also be scoped by order type: a
+	// grocery order id and a food order id come from different sequences, and
+	// sharing a key would make one of the two look already processed.
+	//
+	// A food id keeps its exact old shape, so events in flight during a deploy
+	// and rows already in processed_events still match.
+	if evt.OrderID > 0 && (evt.EventType == "ORDER_PLACED" || evt.EventID == "") {
+		if models.NormalizeSourceOrderType(evt.SourceOrderType) == models.SourceOrderTypeGrocery {
+			evt.EventID = fmt.Sprintf("%s:%s:%d", evt.EventType, models.SourceOrderTypeGrocery, evt.OrderID)
+		} else {
+			evt.EventID = fmt.Sprintf("%s:%d", evt.EventType, evt.OrderID)
+		}
 	}
 	return nil
 }
@@ -619,6 +637,15 @@ func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *m
 		"payment_mode":     order.PaymentMode,
 		"expires_at":       expiresAt.Format(time.RFC3339),
 		"assignment_type":  order.AssignmentType,
+		// Phase 6: "food" or "grocery". The rider app badges the card with it
+		// and sends it back on every call about this delivery. Older builds
+		// ignore the field and keep working, because every delivery they can
+		// see is a food one.
+		"order_type": models.NormalizeSourceOrderType(order.OrderType),
+		// For a grocery delivery the pickup is a shop; the restaurant_* keys
+		// carry it too, so one app code path reads either.
+		"merchant_name": order.RestaurantName,
+		"items_summary": order.ItemsSummary,
 	}
 }
 
@@ -658,7 +685,7 @@ func (s *DeliveryService) ProcessRiderAssignedEvent(ctx context.Context, evt *mo
 		deliveryOrder.DeliveryOrderID, deliveryOrder.OrderID, evt.RiderUserID)
 
 	// Mark event processed
-	_ = s.deliveryRepo.MarkEventProcessed(ctx, eventID, evt.OrderID, "RIDER_ASSIGNED_TO_ORDER")
+	_ = s.deliveryRepo.MarkEventProcessed(ctx, eventID, evt.OrderID, "RIDER_ASSIGNED_TO_ORDER", models.SourceOrderTypeFood)
 
 	// Push WebSocket event ONLY to the assigned rider
 	s.hub.SendToRider(evt.RiderUserID, ws.WSMessage{
@@ -696,8 +723,8 @@ func (s *DeliveryService) GetRiderOrders(ctx context.Context, riderUserID string
 }
 
 // GetRiderOrderDetail returns a single delivery order, validating rider ownership.
-func (s *DeliveryService) GetRiderOrderDetail(ctx context.Context, orderID int, riderUserID string) (*models.DeliveryOrder, error) {
-	do, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID)
+func (s *DeliveryService) GetRiderOrderDetail(ctx context.Context, orderID int, riderUserID, orderType string) (*models.DeliveryOrder, error) {
+	do, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID, orderType)
 	if err != nil {
 		return nil, fmt.Errorf("delivery order not found")
 	}
@@ -988,7 +1015,7 @@ func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, ride
 	// Record the rider on restaurant-service's order, which is what the
 	// customer app reads. If this never lands, the next status update retries
 	// it synchronously (prepareRestaurantTransition).
-	s.syncRiderAssignmentAsync(req.OrderID, riderID, now)
+	s.syncRiderAssignmentAsync(req.OrderID, riderID, now, deliveryOrder.OrderType)
 
 	return deliveryOrder, nil
 }
@@ -1022,8 +1049,8 @@ func (s *DeliveryService) RejectRequest(ctx context.Context, requestID int, ride
 }
 
 // UpdateDeliveryStatus handles POST /riders/orders/{orderId}/status
-func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int, riderID string, newStatus string, paymentCollected bool, notes string) error {
-	deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID)
+func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int, riderID string, newStatus string, paymentCollected bool, notes, orderType string) error {
+	deliveryOrder, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID, orderType)
 	if err != nil {
 		return rejectStatus(orderID, riderID, "", newStatus,
 			ErrCodeDeliveryNotFound, dispatchtrace.ReasonDeliveryNotFound, "delivery order not found", nil)
@@ -1098,7 +1125,15 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		if err := s.prepareRestaurantTransition(ctx, deliveryOrder, riderID, newStatus, snap); err != nil {
 			return err
 		}
-		if err := s.restaurantCli.NotifyDeliveryStatusUpdate(orderID, client.DeliveryStatusPayload{
+		if deliveryOrder.IsGrocery() {
+			if err := s.restaurantCli.NotifyGroceryDeliveryStatus(orderID, client.GroceryDeliveryStatusPayload{
+				RiderID:        riderID,
+				DeliveryStatus: newStatus,
+				Reason:         notes,
+			}); err != nil {
+				return restaurantTransitionError(deliveryOrder, riderID, newStatus, err)
+			}
+		} else if err := s.restaurantCli.NotifyDeliveryStatusUpdate(orderID, client.DeliveryStatusPayload{
 			OrderID:          orderID,
 			RestaurantID:     deliveryOrder.RestaurantID,
 			RiderID:          riderID,
@@ -1146,7 +1181,7 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 			log.Printf("[DELIVERY] Skipping platform payout for restaurant-owned order %d", orderID)
 		} else {
 			// Add automatic earnings creation on delivery completion
-			_ = s.deliveryRepo.RecordEarning(ctx, nil, riderID, orderID, "delivery_fee", 30.00, "Base delivery payout")
+			_ = s.deliveryRepo.RecordEarning(ctx, nil, riderID, orderID, "delivery_fee", 30.00, "Base delivery payout", deliveryOrder.OrderType)
 			log.Printf("[DELIVERY] Recorded base delivery payout for order %d to rider %s", orderID, riderID)
 		}
 
@@ -1167,8 +1202,8 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 }
 
 // GetDeliveryTracking returns tracking info for GET /delivery/orders/{orderId}/tracking
-func (s *DeliveryService) GetDeliveryTracking(ctx context.Context, orderID int) (*models.DeliveryTrackingResponse, error) {
-	do, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID)
+func (s *DeliveryService) GetDeliveryTracking(ctx context.Context, orderID int, orderType string) (*models.DeliveryTrackingResponse, error) {
+	do, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID, orderType)
 	if err != nil {
 		return nil, fmt.Errorf("delivery order not found")
 	}

@@ -267,3 +267,66 @@ func (c *RestaurantClient) NotifyRiderDeliveryCompletedAsync(payload RiderDelive
 		}
 	}()
 }
+
+// ────────────────────────────────────────────────────────────────────────────
+// Grocery deliveries (Phase 6)
+//
+// The same internal-token guard and the same retry behaviour as the food
+// callbacks above; only the path and the payload differ, because a grocery
+// order lives in its own table with its own status machine.
+// ────────────────────────────────────────────────────────────────────────────
+
+// GroceryAssignRiderPayload is the rider recorded on a grocery order.
+type GroceryAssignRiderPayload struct {
+	RiderID    string `json:"rider_id"`
+	RiderName  string `json:"rider_name,omitempty"`
+	RiderPhone string `json:"rider_phone,omitempty"`
+}
+
+// GroceryDeliveryStatusPayload is a rider status report for a grocery order.
+type GroceryDeliveryStatusPayload struct {
+	RiderID        string `json:"rider_id"`
+	DeliveryStatus string `json:"delivery_status"`
+	Reason         string `json:"reason,omitempty"`
+}
+
+// NotifyGroceryRiderAssigned calls
+// POST {baseURL}/internal/grocery/orders/{orderId}/assign-rider.
+//
+// A 409 means the order is no longer available — the shop assigned its own
+// rider, or it moved on — and the caller must undo its own assignment.
+func (c *RestaurantClient) NotifyGroceryRiderAssigned(orderID int, payload GroceryAssignRiderPayload) error {
+	return c.postGrocery(orderID, fmt.Sprintf("%s/internal/grocery/orders/%d/assign-rider", c.baseURL, orderID), payload)
+}
+
+// NotifyGroceryDeliveryStatus calls
+// POST {baseURL}/internal/grocery/orders/{orderId}/delivery-status.
+func (c *RestaurantClient) NotifyGroceryDeliveryStatus(orderID int, payload GroceryDeliveryStatusPayload) error {
+	return c.postGrocery(orderID, fmt.Sprintf("%s/internal/grocery/orders/%d/delivery-status", c.baseURL, orderID), payload)
+}
+
+func (c *RestaurantClient) postGrocery(orderID int, url string, payload interface{}) error {
+	if c.baseURL == "" {
+		return fmt.Errorf("restaurant-service base URL is not configured")
+	}
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal grocery payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Token", c.token)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("grocery callback to restaurant-service failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return callbackError(resp, orderID)
+}

@@ -311,7 +311,7 @@ func TestAcceptanceSyncRetriesAServerError(t *testing.T) {
 	l.fake.failAssign = 2
 	l.seedAssigned(t, 13370, "confirmed", false, "online")
 
-	l.svc.syncRiderAssignmentAsync(13370, lcRider, time.Now())
+	l.svc.syncRiderAssignmentAsync(13370, lcRider, time.Now(), "")
 
 	waitFor(t, "rider recorded after retries", func() bool {
 		_, rider := l.orderRow(t, 13370)
@@ -328,26 +328,26 @@ func TestDeliveryLifecycleValidSequence(t *testing.T) {
 	l.seedAssigned(t, 13380, "preparing", true, "cash")
 	ctx := context.Background()
 
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, "", ""); err != nil {
 		t.Fatalf("reached restaurant: %v", err)
 	}
 	// Kitchen marks the order ready (owner app / KDS / prep timer).
 	if _, err := l.db.Exec(`UPDATE orders SET order_status = 'ready' WHERE order_id = 13380`); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusPickedUp, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusPickedUp, false, "", ""); err != nil {
 		t.Fatalf("picked up: %v", err)
 	}
 	if s, _ := l.orderRow(t, 13380); s != "out_for_delivery" {
 		t.Fatalf("canonical order after pickup = %q, want out_for_delivery", s)
 	}
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusOnTheWay, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusOnTheWay, false, "", ""); err != nil {
 		t.Fatalf("on the way: %v", err)
 	}
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusDelivered, false, ""); statusCode(err) != ErrCodeCashNotConfirmed {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusDelivered, false, "", ""); statusCode(err) != ErrCodeCashNotConfirmed {
 		t.Fatalf("delivered without cash confirmation: %v, want %s", err, ErrCodeCashNotConfirmed)
 	}
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusDelivered, true, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13380, lcRider, models.DeliveryStatusDelivered, true, "", ""); err != nil {
 		t.Fatalf("delivered: %v", err)
 	}
 
@@ -387,11 +387,11 @@ func TestPickupBeforeKitchenReadyIsRefusedClearly(t *testing.T) {
 	l := newLifecycle(t)
 	l.seedAssigned(t, 13381, "preparing", true, "online")
 	ctx := context.Background()
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13381, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13381, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 
-	err := l.svc.UpdateDeliveryStatus(ctx, 13381, lcRider, models.DeliveryStatusPickedUp, false, "")
+	err := l.svc.UpdateDeliveryStatus(ctx, 13381, lcRider, models.DeliveryStatusPickedUp, false, "", "")
 	if statusCode(err) != ErrCodeOrderNotReady {
 		t.Fatalf("pickup while preparing: %v, want %s", err, ErrCodeOrderNotReady)
 	}
@@ -408,7 +408,7 @@ func TestPickupBeforeKitchenReadyIsRefusedClearly(t *testing.T) {
 	if _, err := l.db.Exec(`UPDATE orders SET order_status = 'ready' WHERE order_id = 13381`); err != nil {
 		t.Fatal(err)
 	}
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13381, lcRider, models.DeliveryStatusPickedUp, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13381, lcRider, models.DeliveryStatusPickedUp, false, "", ""); err != nil {
 		t.Fatalf("pickup once ready: %v", err)
 	}
 }
@@ -419,7 +419,7 @@ func TestStatusUpdateRecordsAMissingAssignmentFirst(t *testing.T) {
 	l := newLifecycle(t)
 	l.seedAssigned(t, 13356, "ready", false, "online")
 	ctx := context.Background()
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13356, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13356, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, "", ""); err != nil {
 		t.Fatal(err)
 	}
 	// Reaching the restaurant already repairs it, best effort.
@@ -430,7 +430,7 @@ func TestStatusUpdateRecordsAMissingAssignmentFirst(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if err := l.svc.UpdateDeliveryStatus(ctx, 13356, lcRider, models.DeliveryStatusPickedUp, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(ctx, 13356, lcRider, models.DeliveryStatusPickedUp, false, "", ""); err != nil {
 		t.Fatalf("pickup with missing assignment: %v", err)
 	}
 	status, rider := l.orderRow(t, 13356)
@@ -451,7 +451,7 @@ func TestStatusUpdateFailsClosedWhenTheAssignmentCannotBeRecorded(t *testing.T) 
 	if _, err := l.db.Exec(`UPDATE delivery_orders SET delivery_status = 'rider_arrived_restaurant' WHERE order_id = 13382`); err != nil {
 		t.Fatal(err)
 	}
-	err := l.svc.UpdateDeliveryStatus(context.Background(), 13382, lcRider, models.DeliveryStatusPickedUp, false, "")
+	err := l.svc.UpdateDeliveryStatus(context.Background(), 13382, lcRider, models.DeliveryStatusPickedUp, false, "", "")
 	if statusCode(err) != ErrCodeRestaurantSync {
 		t.Fatalf("got %v, want %s", err, ErrCodeRestaurantSync)
 	}
@@ -472,7 +472,7 @@ func TestRestaurantRefusalCarriesItsReason(t *testing.T) {
 	if _, err := l.db.Exec(`UPDATE delivery_orders SET delivery_status = 'rider_arrived_restaurant' WHERE order_id = 13383`); err != nil {
 		t.Fatal(err)
 	}
-	err := l.svc.UpdateDeliveryStatus(context.Background(), 13383, lcRider, models.DeliveryStatusPickedUp, false, "")
+	err := l.svc.UpdateDeliveryStatus(context.Background(), 13383, lcRider, models.DeliveryStatusPickedUp, false, "", "")
 	if statusCode(err) != ErrCodeRestaurantSync || !strings.Contains(err.Error(), "status 409") ||
 		!strings.Contains(err.Error(), "order status changed concurrently") {
 		t.Fatalf("got %v", err)
@@ -487,7 +487,7 @@ func TestRepeatingTheCurrentStepIsIdempotent(t *testing.T) {
 	l.seedAssigned(t, 13384, "ready", true, "online")
 	ctx := context.Background()
 	for i := 0; i < 2; i++ {
-		if err := l.svc.UpdateDeliveryStatus(ctx, 13384, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, ""); err != nil {
+		if err := l.svc.UpdateDeliveryStatus(ctx, 13384, lcRider, models.DeliveryStatusRiderArrivedRestaurant, false, "", ""); err != nil {
 			t.Fatalf("attempt %d: %v", i+1, err)
 		}
 	}
@@ -503,7 +503,7 @@ func TestRepeatingTheCurrentStepIsIdempotent(t *testing.T) {
 func TestSkippingAStepIsRejected(t *testing.T) {
 	l := newLifecycle(t)
 	l.seedAssigned(t, 13385, "ready", true, "online")
-	err := l.svc.UpdateDeliveryStatus(context.Background(), 13385, lcRider, models.DeliveryStatusPickedUp, false, "")
+	err := l.svc.UpdateDeliveryStatus(context.Background(), 13385, lcRider, models.DeliveryStatusPickedUp, false, "", "")
 	if statusCode(err) != ErrCodeInvalidTransition {
 		t.Fatalf("got %v, want %s", err, ErrCodeInvalidTransition)
 	}
@@ -518,7 +518,7 @@ func TestSkippingAStepIsRejected(t *testing.T) {
 func TestOnlyTheAssignedRiderCanUpdate(t *testing.T) {
 	l := newLifecycle(t)
 	l.seedAssigned(t, 13386, "ready", true, "online")
-	err := l.svc.UpdateDeliveryStatus(context.Background(), 13386, lcOtherRider, models.DeliveryStatusRiderArrivedRestaurant, false, "")
+	err := l.svc.UpdateDeliveryStatus(context.Background(), 13386, lcOtherRider, models.DeliveryStatusRiderArrivedRestaurant, false, "", "")
 	if statusCode(err) != ErrCodeNotAssignedRider {
 		t.Fatalf("got %v, want %s", err, ErrCodeNotAssignedRider)
 	}
@@ -623,7 +623,7 @@ func TestStatusUpdateOnAClosedOrderReleasesAndSaysSo(t *testing.T) {
 	if _, err := l.db.Exec(`UPDATE delivery_orders SET delivery_status = 'rider_arrived_restaurant' WHERE order_id = 13390`); err != nil {
 		t.Fatal(err)
 	}
-	err := l.svc.UpdateDeliveryStatus(context.Background(), 13390, lcRider, models.DeliveryStatusPickedUp, false, "")
+	err := l.svc.UpdateDeliveryStatus(context.Background(), 13390, lcRider, models.DeliveryStatusPickedUp, false, "", "")
 	if statusCode(err) != ErrCodeOrderClosed {
 		t.Fatalf("got %v, want %s", err, ErrCodeOrderClosed)
 	}
@@ -659,7 +659,7 @@ func TestOwnerMarkedDeliveredStillLetsTheRiderFinish(t *testing.T) {
 	if released, _ := l.svc.ReleaseClosedDeliveries(context.Background()); released != 0 {
 		t.Fatalf("sweep released %d", released)
 	}
-	if err := l.svc.UpdateDeliveryStatus(context.Background(), 13392, lcRider, models.DeliveryStatusDelivered, false, ""); err != nil {
+	if err := l.svc.UpdateDeliveryStatus(context.Background(), 13392, lcRider, models.DeliveryStatusDelivered, false, "", ""); err != nil {
 		t.Fatalf("delivered: %v", err)
 	}
 	if s := l.deliveryStatus(t, 13392); s != models.DeliveryStatusDelivered {

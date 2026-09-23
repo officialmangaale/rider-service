@@ -10,22 +10,25 @@ import (
 // DeliveryOrder represents a rider-service-owned delivery order
 // created from ORDER_PLACED SQS events.
 type DeliveryOrder struct {
-	DeliveryOrderID int        `json:"delivery_order_id"`
-	OrderID         int        `json:"order_id"`
-	RestaurantID    int        `json:"restaurant_id"`
-	CustomerID      int        `json:"customer_id"`
-	PickupLatitude  float64    `json:"pickup_latitude"`
-	PickupLongitude float64    `json:"pickup_longitude"`
-	PickupAddress   string     `json:"pickup_address"`
-	DropLatitude    float64    `json:"drop_latitude"`
-	DropLongitude   float64    `json:"drop_longitude"`
-	DropAddress     string     `json:"drop_address"`
-	Amount          float64    `json:"amount"`
-	PaymentMode     string     `json:"payment_mode"`
-	DeliveryStatus  string     `json:"delivery_status"`
-	AssignedRiderID *string    `json:"assigned_rider_id"`
-	RiderUserID     *string    `json:"rider_user_id"`
-	AssignmentType  string     `json:"assignment_type"`
+	DeliveryOrderID int     `json:"delivery_order_id"`
+	OrderID         int     `json:"order_id"`
+	RestaurantID    int     `json:"restaurant_id"`
+	CustomerID      int     `json:"customer_id"`
+	PickupLatitude  float64 `json:"pickup_latitude"`
+	PickupLongitude float64 `json:"pickup_longitude"`
+	PickupAddress   string  `json:"pickup_address"`
+	DropLatitude    float64 `json:"drop_latitude"`
+	DropLongitude   float64 `json:"drop_longitude"`
+	DropAddress     string  `json:"drop_address"`
+	Amount          float64 `json:"amount"`
+	PaymentMode     string  `json:"payment_mode"`
+	DeliveryStatus  string  `json:"delivery_status"`
+	AssignedRiderID *string `json:"assigned_rider_id"`
+	RiderUserID     *string `json:"rider_user_id"`
+	AssignmentType  string  `json:"assignment_type"`
+	// OrderType is "food" or "grocery". Rows written before grocery dispatch
+	// carry "food", which is what they were.
+	OrderType       string     `json:"order_type"`
 	RestaurantOwned bool       `json:"restaurant_owned"`
 	RestaurantName  string     `json:"restaurant_name"`
 	RestaurantPhone string     `json:"restaurant_phone"`
@@ -173,11 +176,18 @@ type OrderPlacedEvent struct {
 	CustomerPhone   string             `json:"customer_phone,omitempty"`
 	OrderType       string             `json:"order_type"`
 	DeliveryMode    string             `json:"delivery_mode,omitempty"`
-	PaymentMode     string             `json:"payment_mode"`
-	Amount          float64            `json:"amount"`
-	Pickup          LocationDetail     `json:"pickup"`
-	Drop            LocationDetail     `json:"drop"`
-	CreatedAt       string             `json:"created_at"`
+	// SourceOrderType is "food" or "grocery"; absent means food, so messages
+	// published before grocery dispatch keep their meaning.
+	SourceOrderType string         `json:"source_order_type,omitempty"`
+	MerchantID      int64          `json:"merchant_id,omitempty"`
+	MerchantName    string         `json:"merchant_name,omitempty"`
+	MerchantPhone   string         `json:"merchant_phone,omitempty"`
+	ItemsSummary    string         `json:"items_summary,omitempty"`
+	PaymentMode     string         `json:"payment_mode"`
+	Amount          float64        `json:"amount"`
+	Pickup          LocationDetail `json:"pickup"`
+	Drop            LocationDetail `json:"drop"`
+	CreatedAt       string         `json:"created_at"`
 }
 
 // LocationDetail for pickup/drop coordinates.
@@ -223,4 +233,25 @@ type TrackingRiderInfo struct {
 type DeliveryTimelineItem struct {
 	Status    string    `json:"status"`
 	Timestamp time.Time `json:"timestamp"`
+}
+
+// Source order types. A delivery is for a restaurant order or a grocery one;
+// the dispatch machinery is otherwise identical.
+const (
+	SourceOrderTypeFood    = "food"
+	SourceOrderTypeGrocery = "grocery"
+)
+
+// NormalizeSourceOrderType defaults an empty or unknown value to food, which
+// is what every producer that predates grocery dispatch means.
+func NormalizeSourceOrderType(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), SourceOrderTypeGrocery) {
+		return SourceOrderTypeGrocery
+	}
+	return SourceOrderTypeFood
+}
+
+// IsGrocery reports whether this delivery is for a grocery order.
+func (o *DeliveryOrder) IsGrocery() bool {
+	return NormalizeSourceOrderType(o.OrderType) == SourceOrderTypeGrocery
 }

@@ -49,7 +49,11 @@ CREATE TABLE rider_availability (
 );
 CREATE TABLE delivery_orders (
 	delivery_order_id serial PRIMARY KEY,
-	order_id          integer NOT NULL UNIQUE,
+	order_id          integer NOT NULL,
+	-- Migration 096: a delivery is for a food order or a grocery one, and the
+	-- two id spaces overlap, so the key is the pair.
+	order_type        varchar(20) NOT NULL DEFAULT 'food',
+	UNIQUE (order_type, order_id),
 	restaurant_id     integer NOT NULL,
 	customer_id       integer NOT NULL,
 	pickup_latitude   double precision NOT NULL,
@@ -94,6 +98,7 @@ CREATE TABLE delivery_order_requests (
 CREATE TABLE processed_events (
 	event_id     varchar(255) PRIMARY KEY,
 	order_id     integer,
+	order_type   varchar(20) NOT NULL DEFAULT 'food',
 	event_type   varchar(100) NOT NULL,
 	processed_at timestamptz NOT NULL DEFAULT now(),
 	is_deleted   boolean NOT NULL DEFAULT false
@@ -166,6 +171,7 @@ CREATE TABLE rider_earnings (
 	id            uuid PRIMARY KEY DEFAULT gen_random_uuid(),
 	rider_id      uuid NOT NULL,
 	order_id      integer,
+	order_type    varchar(20) NOT NULL DEFAULT 'food',
 	type          varchar(30) NOT NULL,
 	amount        numeric NOT NULL,
 	description   text,

@@ -120,6 +120,9 @@ func (h *DeliveryHandler) UpdateDeliveryStatus(c *gin.Context) {
 		DeliveryStatus   string `json:"delivery_status" binding:"required"`
 		PaymentCollected bool   `json:"payment_collected"`
 		Notes            string `json:"notes"`
+		// OrderType tells a grocery delivery from a food one. Older app
+		// builds omit it and mean food, which is all they can see.
+		OrderType string `json:"order_type"`
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		dto.ValidationError(c, "delivery_status is required")
@@ -138,7 +141,7 @@ func (h *DeliveryHandler) UpdateDeliveryStatus(c *gin.Context) {
 		return
 	}
 
-	if err := h.deliverySvc.UpdateDeliveryStatus(c.Request.Context(), orderID, riderID, req.DeliveryStatus, req.PaymentCollected, req.Notes); err != nil {
+	if err := h.deliverySvc.UpdateDeliveryStatus(c.Request.Context(), orderID, riderID, req.DeliveryStatus, req.PaymentCollected, req.Notes, req.OrderType); err != nil {
 		var statusErr *service.DeliveryStatusError
 		if errors.As(err, &statusErr) {
 			// HTTP codes unchanged (older app builds refresh on 400/409);
@@ -157,7 +160,7 @@ func (h *DeliveryHandler) UpdateDeliveryStatus(c *gin.Context) {
 		dto.Conflict(c, err.Error())
 		return
 	}
-	updated, err := h.deliverySvc.GetRiderOrderDetail(c.Request.Context(), orderID, riderID)
+	updated, err := h.deliverySvc.GetRiderOrderDetail(c.Request.Context(), orderID, riderID, req.OrderType)
 	if err != nil {
 		dto.Success(c, http.StatusOK, "Delivery status updated", nil)
 		return
@@ -174,7 +177,7 @@ func (h *DeliveryHandler) GetDeliveryTracking(c *gin.Context) {
 		dto.ValidationError(c, "Invalid order ID")
 		return
 	}
-	tracking, err := h.deliverySvc.GetDeliveryTracking(c.Request.Context(), orderID)
+	tracking, err := h.deliverySvc.GetDeliveryTracking(c.Request.Context(), orderID, c.Query("order_type"))
 	if err != nil {
 		dto.NotFound(c, err.Error())
 		return
@@ -219,7 +222,7 @@ func (h *DeliveryHandler) GetRiderOrderDetail(c *gin.Context) {
 		return
 	}
 
-	do, err := h.deliverySvc.GetRiderOrderDetail(c.Request.Context(), orderID, riderID)
+	do, err := h.deliverySvc.GetRiderOrderDetail(c.Request.Context(), orderID, riderID, c.Query("order_type"))
 	if err != nil {
 		dto.NotFound(c, err.Error())
 		return
@@ -261,10 +264,10 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 			Latitude:  o.PickupLatitude,
 			Longitude: o.PickupLongitude,
 		},
-		ItemsSummary:   o.ItemsSummary,
-		MapsURL:        mapsURL,
-		AssignmentType: assignmentType,
+		ItemsSummary:    o.ItemsSummary,
+		MapsURL:         mapsURL,
+		AssignmentType:  assignmentType,
 		RestaurantOwned: o.RestaurantOwned,
-		AssignedAt:     o.AssignedAt,
+		AssignedAt:      o.AssignedAt,
 	}
 }
