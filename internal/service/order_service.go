@@ -23,6 +23,13 @@ type OrderService struct {
 	earningsRepo   *repository.EarningsRepository
 	historyRepo    *repository.StatusHistoryRepository
 	restaurantCli  *client.RestaurantClient
+	deliverySvc    *DeliveryService
+}
+
+func (s *OrderService) SetDeliveryService(delivery *DeliveryService) { s.deliverySvc = delivery }
+
+func (s *OrderService) AvailableOffers(ctx context.Context, riderID string) ([]map[string]interface{}, error) {
+	return s.deliverySvc.GetPendingRequestPayloads(ctx, riderID)
 }
 
 // NewOrderService creates a new OrderService.
@@ -60,6 +67,9 @@ func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*mod
 			active := activeOrderFromDeliveryOrder(deliveryOrder)
 			var snapshot *repository.OrderRiderSnapshot
 			if snap, snapErr := s.deliveryRepo.GetOrderRiderSnapshot(ctx, deliveryOrder.OrderID); snapErr == nil {
+				if !deliveryOrder.IsGrocery() && !snap.HasRider(riderID) {
+					return nil, sql.ErrNoRows
+				}
 				if restaurantOrderClosed(snap.OrderStatus) {
 					// The restaurant ended this order; it is not the rider's to
 					// act on. ClosedDeliveryWorker frees the rider shortly.
@@ -70,6 +80,8 @@ func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*mod
 				active.RestaurantOrderStatus = snap.OrderStatus
 				ready := restaurantReadyForPickup(snap.OrderStatus)
 				active.PickupReady = &ready
+			} else if !deliveryOrder.IsGrocery() {
+				return nil, snapErr
 			}
 			fields := activeDeliveryFields(deliveryOrder, snapshot)
 			fields["rider_id"] = riderID
@@ -100,6 +112,12 @@ func (s *OrderService) GetIncomingAssignment(ctx context.Context, riderID string
 	if err != nil {
 		return assignment, nil, err
 	}
+	// Legacy offer responses are public previews too.
+	order.CustomerID = nil
+	order.CustomerPhone = ""
+	order.DeliveryAddress = nil
+	order.DeliveryLatitude = nil
+	order.DeliveryLongitude = nil
 	return assignment, order, nil
 }
 
@@ -186,6 +204,20 @@ func stringPtrValue(value *string) string {
 
 // AcceptAssignment accepts a delivery assignment with safe claim.
 func (s *OrderService) AcceptAssignment(ctx context.Context, assignmentID, riderID string) (*models.Order, error) {
+	if s.deliverySvc != nil {
+		assignment, err := s.assignmentRepo.GetByID(ctx, assignmentID)
+		if err != nil || assignment.RiderID != riderID {
+			return nil, fmt.Errorf("assignment not found")
+		}
+		requestID, err := s.deliveryRepo.RequestForLegacyAssignment(ctx, assignment.OrderID, riderID)
+		if err != nil {
+			return nil, fmt.Errorf("offer expired; refresh available orders")
+		}
+		if _, err := s.deliverySvc.AcceptRequest(ctx, requestID, riderID); err != nil {
+			return nil, err
+		}
+		return s.orderRepo.GetOrderByID(ctx, assignment.OrderID)
+	}
 	// Get the assignment
 	assignment, err := s.assignmentRepo.GetByID(ctx, assignmentID)
 	if err != nil {
@@ -266,11 +298,23 @@ func (s *OrderService) RejectAssignment(ctx context.Context, assignmentID, rider
 
 // PickedUp marks an order as out_for_delivery (rider picked up from restaurant).
 func (s *OrderService) PickedUp(ctx context.Context, orderID int, riderID string) (*models.Order, error) {
+	if handled, err := s.transitionDeliveryProjection(ctx, orderID, riderID, "picked_up", false, ""); handled {
+		if err != nil {
+			return nil, err
+		}
+		return s.orderRepo.GetOrderByID(ctx, orderID)
+	}
 	return s.transitionOrder(ctx, orderID, riderID, constants.OrderReady, constants.OrderOutForDelivery)
 }
 
 // Delivered marks an order as delivered and creates earnings.
 func (s *OrderService) Delivered(ctx context.Context, orderID int, riderID string, paymentCollected *bool, notes string) (*models.Order, error) {
+	if handled, err := s.transitionDeliveryProjection(ctx, orderID, riderID, "delivered", paymentCollected != nil && *paymentCollected, notes); handled {
+		if err != nil {
+			return nil, err
+		}
+		return s.orderRepo.GetOrderByID(ctx, orderID)
+	}
 	order, err := s.orderRepo.GetOrderByID(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("order not found")
@@ -327,6 +371,14 @@ func (s *OrderService) Delivered(ctx context.Context, orderID int, riderID strin
 
 // CancelDelivery cancels the delivery with a reason.
 func (s *OrderService) CancelDelivery(ctx context.Context, orderID int, riderID, reason string) (*models.Order, error) {
+	if s.deliverySvc != nil {
+		if _, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID, "food"); err == nil {
+			if err := s.deliverySvc.WithdrawDelivery(ctx, orderID, riderID, reason); err != nil {
+				return nil, err
+			}
+			return &models.Order{OrderID: orderID, OrderStatus: "rider_searching"}, nil
+		}
+	}
 	order, err := s.orderRepo.GetOrderByID(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("order not found")
@@ -373,6 +425,12 @@ func (s *OrderService) CancelDelivery(ctx context.Context, orderID int, riderID,
 // This is a rider-side tracking event — it does NOT change the shared order_status.
 // Idempotent: recording the event multiple times is safe.
 func (s *OrderService) ArrivedAtRestaurant(ctx context.Context, orderID int, riderID string) (*models.Order, error) {
+	if handled, err := s.transitionDeliveryProjection(ctx, orderID, riderID, "rider_arrived_restaurant", false, ""); handled {
+		if err != nil {
+			return nil, err
+		}
+		return s.orderRepo.GetOrderByID(ctx, orderID)
+	}
 	order, err := s.orderRepo.GetOrderByID(ctx, orderID)
 	if err != nil {
 		return nil, fmt.Errorf("order not found")
@@ -411,6 +469,11 @@ func (s *OrderService) ArrivedAtCustomer(ctx context.Context, orderID int, rider
 
 // FailDelivery marks delivery as failed (e.g., customer unreachable).
 func (s *OrderService) FailDelivery(ctx context.Context, orderID int, riderID, reason string) (*models.Order, error) {
+	if s.deliverySvc != nil {
+		if _, err := s.deliveryRepo.GetDeliveryOrderByOrderID(ctx, orderID, "food"); err == nil {
+			return s.CancelDelivery(ctx, orderID, riderID, reason)
+		}
+	}
 	// Same flow as cancel for now — can be extended with different status if needed
 	return s.failDeliveryProjection(ctx, orderID, riderID, reason)
 }

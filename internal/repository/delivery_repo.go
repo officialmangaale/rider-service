@@ -326,6 +326,7 @@ func (r *DeliveryRepository) FindDeliveriesClosedByRestaurant(ctx context.Contex
 		 WHERE d.is_deleted = FALSE
 		   AND d.delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
 		   AND LOWER(TRIM(COALESCE(o.order_status, ''))) IN `+closedRestaurantStatuses+`
+		   AND NOT (o.order_status='completed' AND o.delivered_at IS NOT NULL)
 		 ORDER BY d.updated_at ASC
 		 LIMIT $1`, limit)
 	if err != nil {
@@ -400,6 +401,10 @@ func (r *DeliveryRepository) GetRestaurantContact(ctx context.Context, restauran
 
 func (r *DeliveryRepository) UpdateDeliveryStatus(ctx context.Context, tx *sql.Tx, deliveryOrderID int, status string) error {
 	q := `UPDATE delivery_orders SET delivery_status=$2, updated_at=NOW() WHERE delivery_order_id=$1`
+	if status == models.DeliveryStatusRiderSearching || status == models.DeliveryStatusNoRiderFound {
+		q += ` AND assigned_rider_id IS NULL AND COALESCE(rider_user_id,'')=''
+		    AND delivery_status IN ('pending','rider_searching','no_rider_found')`
+	}
 	if tx != nil {
 		_, err := tx.ExecContext(ctx, q, deliveryOrderID, status)
 		return err
@@ -484,14 +489,16 @@ func (r *DeliveryRepository) CreateRequest(ctx context.Context, deliveryOrderID,
 	var req models.DeliveryOrderRequest
 	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO delivery_order_requests (delivery_order_id, order_id, rider_id, distance_km, expires_at)
-		 VALUES ($1,$2,$3,$4,$5)
+		 SELECT $1,$2,$3,$4,$5 FROM delivery_orders d WHERE d.delivery_order_id=$1
+		   AND d.assigned_rider_id IS NULL AND COALESCE(d.rider_user_id,'')=''
+		   AND d.delivery_status IN ('pending','rider_searching','no_rider_found')
 		 ON CONFLICT (delivery_order_id, rider_id) DO UPDATE SET
 			order_id = EXCLUDED.order_id,
 			distance_km = EXCLUDED.distance_km,
 			status = 'pending',
 			expires_at = EXCLUDED.expires_at,
 			updated_at = NOW()
-		 WHERE delivery_order_requests.status IN ('rejected', 'expired', 'cancelled')
+		 WHERE delivery_order_requests.status IN ('expired', 'cancelled')
 		 RETURNING request_id, delivery_order_id, order_id, rider_id, status, distance_km, expires_at, created_at, updated_at`,
 		deliveryOrderID, orderID, riderID, distanceKm, expiresAt,
 	).Scan(&req.RequestID, &req.DeliveryOrderID, &req.OrderID, &req.RiderID,
@@ -661,23 +668,33 @@ func (r *DeliveryRepository) UpsertRiderAvailability(ctx context.Context, riderI
 	_, err := r.db.ExecContext(ctx,
 		`INSERT INTO rider_availability (rider_id, is_online, is_available, current_order_id, updated_at)
 		 VALUES ($1,$2,$3,$4,NOW())
-		 ON CONFLICT (rider_id) DO UPDATE SET is_online=$2, is_available=$3, current_order_id=$4, updated_at=NOW()`,
+		 ON CONFLICT (rider_id) DO UPDATE SET is_online=$2, is_available=($3 AND rider_availability.current_order_id IS NULL), updated_at=NOW()`,
 		riderID, isOnline, isAvailable, currentOrderID)
 	return err
 }
 
 func (r *DeliveryRepository) SetRiderBusy(ctx context.Context, tx *sql.Tx, riderID string, orderID int) error {
-	q := `INSERT INTO rider_availability (rider_id, is_online, is_available, current_order_id, updated_at)
-	      VALUES ($1, true, false, $2, NOW())
-	      ON CONFLICT (rider_id) DO UPDATE SET is_available=false, current_order_id=$2, updated_at=NOW()`
+	q := `UPDATE rider_availability SET is_available=false, current_order_id=$2, updated_at=NOW()
+        WHERE rider_id=$1 AND is_online AND is_available AND current_order_id IS NULL`
+	var result sql.Result
+	var err error
 	if tx != nil {
-		_, err := tx.ExecContext(ctx, q, riderID, orderID)
+		result, err = tx.ExecContext(ctx, q, riderID, orderID)
+	} else {
+		result, err = r.db.ExecContext(ctx, q, riderID, orderID)
+	}
+	if err != nil {
 		return err
 	}
-	_, err := r.db.ExecContext(ctx, q, riderID, orderID)
-	return err
+	count, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if count != 1 {
+		return fmt.Errorf("rider is offline or already has an active delivery")
+	}
+	return nil
 }
-
 func (r *DeliveryRepository) SetRiderFree(ctx context.Context, tx *sql.Tx, riderID string) error {
 	q := `UPDATE rider_availability SET is_available=true, current_order_id=NULL, updated_at=NOW() WHERE rider_id=$1`
 	if tx != nil {
@@ -747,10 +764,16 @@ func nearestRidersSQL(candidateFilter string) string {
 				)) AS distance_km
 			FROM rider_locations rl
 			INNER JOIN rider_availability ra ON ra.rider_id = rl.rider_id
+            JOIN users u ON u.id::text=rl.rider_id
 			WHERE ra.is_online = true
 			  AND ra.is_available = true
 			  AND ra.current_order_id IS NULL
-			  AND rl.last_updated_at >= NOW() - INTERVAL '5 minutes'` + candidateFilter + `
+			  AND NOT COALESCE(rl.is_deleted,false) AND NOT COALESCE(ra.is_deleted,false)
+              AND NOT COALESCE(u.is_deleted,false) AND COALESCE(u.status,'active')='active'
+              AND u.primary_role IN ('rider','delivery_driver')
+              AND rl.latitude BETWEEN -90 AND 90 AND rl.longitude BETWEEN -180 AND 180
+              AND rl.last_updated_at <= NOW()
+              AND rl.last_updated_at >= NOW() - make_interval(secs => (SELECT location_max_age_seconds FROM online_delivery_dispatch_config WHERE singleton))` + candidateFilter + `
 		) eligible_riders
 		WHERE distance_km <= $3
 		ORDER BY distance_km ASC

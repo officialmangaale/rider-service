@@ -1,6 +1,8 @@
 package handler
 
 import (
+	"database/sql"
+	"errors"
 	"net/http"
 	"strconv"
 	"strings"
@@ -29,12 +31,12 @@ func (h *OrderHandler) GetAvailableOrders(c *gin.Context) {
 	_ = c.ShouldBindQuery(&pq)
 	pq.Normalize()
 
-	orders, total, err := h.orderSvc.GetAvailableOrders(c.Request.Context(), pq.Limit, pq.Offset())
+	orders, err := h.orderSvc.AvailableOffers(c.Request.Context(), middleware.GetUserID(c))
 	if err != nil {
 		dto.InternalError(c, "Failed to fetch available orders")
 		return
 	}
-	dto.Paginated(c, orders, pq.Page, pq.Limit, total)
+	dto.Paginated(c, orders, pq.Page, pq.Limit, int64(len(orders)))
 }
 
 // GetActiveOrder returns the rider's current active delivery.
@@ -42,9 +44,11 @@ func (h *OrderHandler) GetActiveOrder(c *gin.Context) {
 	userID := middleware.GetUserID(c)
 	order, err := h.orderSvc.GetActiveOrder(c.Request.Context(), userID)
 	if err != nil {
-		// App expects empty/404 if no active order. We return 200 with nil data or 404 per user preference.
-		// "Return 404 if no active order"
-		dto.NotFound(c, "no active order")
+		if errors.Is(err, sql.ErrNoRows) {
+			dto.NotFound(c, "no active order")
+		} else {
+			dto.InternalError(c, "Could not load active delivery")
+		}
 		return
 	}
 	dto.Success(c, http.StatusOK, "active order", order)

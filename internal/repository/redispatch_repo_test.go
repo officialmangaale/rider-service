@@ -29,7 +29,7 @@ func TestRedispatchNeverOffersAnAssignedOrRestaurantOwnedOrder(t *testing.T) {
 // delivery_orders still says no_rider_found for orders the restaurant has
 // since cancelled or completed; the restaurant order's status is the gate.
 func TestRedispatchOnlyOffersOrdersTheRestaurantStillWantsDelivered(t *testing.T) {
-	want := "LOWER(o.order_status) IN ('accepted', 'confirmed', 'preparing', 'ready')"
+	want := "lower(o.order_status::text) IN ('preparing', 'ready')"
 	if !strings.Contains(redispatchCandidateSQL, want) {
 		t.Fatalf("candidate query must gate on the restaurant order status:\n%s", redispatchCandidateSQL)
 	}

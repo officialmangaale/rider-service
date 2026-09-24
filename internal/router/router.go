@@ -38,6 +38,7 @@ func Setup(
 	// -- Services --
 	riderSvc := service.NewRiderService(riderRepo, orderRepo, earningsRepo)
 	orderSvc := service.NewOrderService(orderRepo, deliveryRepo, assignmentRepo, riderRepo, earningsRepo, statusHistoryRepo, restaurantCli)
+	orderSvc.SetDeliveryService(deliverySvc)
 	locationSvc := service.NewLocationService(riderRepo, locationHistoryRepo)
 	// The app's location route feeds the Redis dispatch index too.
 	locationSvc.SetLocationIndexer(deliverySvc)
@@ -64,7 +65,7 @@ func Setup(
 	// Rider WebSocket uses token from query or auth header
 	r.GET("/ws/rider", hub.HandleRiderWS(cfg.JWTSecret))
 	// Tracking WebSocket for customer app
-	r.GET("/ws/tracking/orders/:orderId", hub.HandleOrderTrackingWS())
+	r.GET("/ws/tracking/orders/:orderId", middleware.TrackingToken(), middleware.AuthMiddleware(cfg.JWTSecret), middleware.TrackingAccess(db), hub.HandleOrderTrackingWS())
 
 	// ==================== PROTECTED ROUTES ====================
 	auth := r.Group("/api/v1")
@@ -127,10 +128,11 @@ func Setup(
 		newDelivery.GET("/orders", deliveryH.GetRiderOrders)
 		newDelivery.GET("/orders/:orderId", deliveryH.GetRiderOrderDetail)
 		newDelivery.POST("/orders/:orderId/status", deliveryH.UpdateDeliveryStatus)
+		newDelivery.POST("/orders/:orderId/withdraw", deliveryH.WithdrawDelivery)
 	}
 
 	// --- NEW Delivery Tracking (For Customer App, internal or authenticated) ---
-	r.GET("/api/v1/delivery/orders/:orderId/tracking", deliveryH.GetDeliveryTracking)
+	r.GET("/api/v1/delivery/orders/:orderId/tracking", middleware.AuthMiddleware(cfg.JWTSecret), middleware.TrackingAccess(db), deliveryH.GetDeliveryTracking)
 
 	// --- Earnings ---
 	earnings := auth.Group("/earnings")

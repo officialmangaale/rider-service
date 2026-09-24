@@ -94,6 +94,22 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 	if err := canonicalizeOrderPlacedEvent(evt); err != nil {
 		return err
 	}
+	if models.NormalizeSourceOrderType(evt.SourceOrderType) == models.SourceOrderTypeFood {
+		allowed, err := s.deliveryRepo.FoodDispatchAllowed(ctx, evt.OrderID)
+		if err != nil {
+			return err
+		}
+		if !allowed {
+			return nil
+		}
+		if err := s.deliveryRepo.RefreshFoodEvent(ctx, evt); err != nil {
+			if errors.Is(err, sql.ErrNoRows) {
+				return nil
+			}
+			return err
+		}
+		evt.DeliveryMode = "platform"
+	}
 	log.Printf("[DELIVERY] Processing ORDER_PLACED order_id=%d restaurant_id=%d delivery_mode=%s",
 		evt.OrderID, evt.RestaurantID, evt.DeliveryMode)
 
@@ -525,6 +541,12 @@ func (s *DeliveryService) canRedispatch(ctx context.Context, order *models.Deliv
 		return false, nil
 	}
 
+	if !order.IsGrocery() {
+		allowed, err := s.deliveryRepo.FoodDispatchAllowed(ctx, order.OrderID)
+		if err != nil || !allowed {
+			return false, err
+		}
+	}
 	hasAccepted, err := s.deliveryRepo.HasAcceptedRequest(ctx, order.DeliveryOrderID)
 	if err != nil {
 		return false, fmt.Errorf("failed to check accepted rider requests: %w", err)
@@ -621,22 +643,21 @@ func (s *DeliveryService) traceEligibility(ctx context.Context, trigger string, 
 
 func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *models.DeliveryOrder, distanceKm float64, expiresAt time.Time) map[string]interface{} {
 	return map[string]interface{}{
-		"request_id":       req.RequestID,
-		"order_id":         order.OrderID,
-		"restaurant_id":    order.RestaurantID,
-		"restaurant_name":  order.RestaurantName,
-		"restaurant_phone": order.RestaurantPhone,
-		"pickup_address":   order.PickupAddress,
-		"drop_address":     order.DropAddress,
-		"pickup_latitude":  order.PickupLatitude,
-		"pickup_longitude": order.PickupLongitude,
-		"drop_latitude":    order.DropLatitude,
-		"drop_longitude":   order.DropLongitude,
-		"distance_km":      distanceKm,
-		"amount":           order.Amount,
-		"payment_mode":     order.PaymentMode,
-		"expires_at":       expiresAt.Format(time.RFC3339),
-		"assignment_type":  order.AssignmentType,
+		"request_id":           req.RequestID,
+		"order_id":             order.OrderID,
+		"restaurant_id":        order.RestaurantID,
+		"restaurant_name":      order.RestaurantName,
+		"restaurant_phone":     order.RestaurantPhone,
+		"pickup_address":       order.PickupAddress,
+		"drop_address":         "Delivery details available after acceptance",
+		"pickup_latitude":      order.PickupLatitude,
+		"pickup_longitude":     order.PickupLongitude,
+		"delivery_distance_km": approximateDeliveryDistance(order),
+		"distance_km":          distanceKm,
+		"amount":               order.Amount,
+		"payment_mode":         order.PaymentMode,
+		"expires_at":           expiresAt.Format(time.RFC3339),
+		"assignment_type":      order.AssignmentType,
 		// Phase 6: "food" or "grocery". The rider app badges the card with it
 		// and sends it back on every call about this delivery. Older builds
 		// ignore the field and keep working, because every delivery they can
@@ -651,6 +672,13 @@ func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *m
 
 // ProcessRiderAssignedEvent handles a RIDER_ASSIGNED_TO_ORDER event from restaurant-service.
 func (s *DeliveryService) ProcessRiderAssignedEvent(ctx context.Context, evt *models.RiderAssignedToOrderEvent) error {
+	allowed, err := s.deliveryRepo.OwnAssignmentEventCurrent(ctx, evt.OrderID, evt.RiderUserID)
+	if err != nil {
+		return err
+	}
+	if !allowed {
+		return nil
+	}
 	// Idempotency: use composite event ID
 	eventID := fmt.Sprintf("rider_assigned:%d:%s", evt.OrderID, evt.RiderUserID)
 	processed, err := s.deliveryRepo.IsEventProcessed(ctx, eventID)
@@ -837,6 +865,25 @@ func (s *DeliveryService) GetPendingRequestPayloads(ctx context.Context, riderID
 			log.Printf("[DELIVERY] Skipping request %d because delivery_order %d is missing: %v", req.RequestID, req.DeliveryOrderID, err)
 			continue
 		}
+		if nonEmptyString(order.AssignedRiderID) || order.DeliveryStatus == models.DeliveryStatusCancelled || order.DeliveryStatus == models.DeliveryStatusDelivered {
+			continue
+		}
+		if !order.IsGrocery() {
+			allowed, err := s.deliveryRepo.FoodDispatchAllowed(ctx, order.OrderID)
+			if err != nil {
+				return nil, err
+			}
+			if !allowed {
+				continue
+			}
+		}
+		eligible, err := s.deliveryRepo.FindNearestRidersAmong(ctx, order.PickupLatitude, order.PickupLongitude, s.searchRadiusKm, 1, []string{riderID})
+		if err != nil {
+			return nil, err
+		}
+		if len(eligible) == 0 {
+			continue
+		}
 		payloads = append(payloads, BuildDeliveryOrderRequestPayload(req, order, req.DistanceKm, req.ExpiresAt))
 	}
 	return payloads, nil
@@ -884,11 +931,24 @@ func acceptRejectReason(err error) string {
 // acceptRequest holds the accept transaction. Exclusivity comes from locking
 // the request row and from AssignRider's `assigned_rider_id IS NULL` guard.
 func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, riderID string) (*models.DeliveryOrder, error) {
+	initial, err := s.deliveryRepo.GetRequestByID(ctx, requestID)
+	if err != nil || initial.RiderID != riderID {
+		return nil, fmt.Errorf("request not found")
+	}
+	initialOrder, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, initial.DeliveryOrderID)
+	if err != nil {
+		return nil, err
+	}
 	tx, err := s.deliveryRepo.BeginTx(ctx)
 	if err != nil {
 		return nil, err
 	}
 	defer tx.Rollback()
+	if !initialOrder.IsGrocery() {
+		if err := s.deliveryRepo.LockFoodOrder(ctx, tx, initial.OrderID); err != nil {
+			return nil, err
+		}
+	}
 
 	// Lock order: delivery order, then offer. Concurrent accepts for one
 	// order queue here; the one that waits then sees the order assigned.
@@ -903,6 +963,22 @@ func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, ride
 	}
 	if req.RiderID != riderID {
 		return nil, fmt.Errorf("request does not belong to this rider")
+	}
+	if req.Status == models.RequestStatusAccepted {
+		current, err := s.deliveryRepo.GetDeliveryOrderByID(ctx, req.DeliveryOrderID)
+		if err == nil && current.AssignedRiderID != nil && *current.AssignedRiderID == riderID && current.DeliveryStatus != models.DeliveryStatusCancelled {
+			if !current.IsGrocery() {
+				snap, err := s.deliveryRepo.GetOrderRiderSnapshot(ctx, current.OrderID)
+				if err != nil {
+					return nil, err
+				}
+				if !snap.HasRider(riderID) || restaurantOrderClosed(snap.OrderStatus) {
+					return nil, fmt.Errorf("order is no longer active or assigned to this rider")
+				}
+			}
+			return current, nil
+		}
+		return nil, fmt.Errorf("order is no longer assigned to this rider")
 	}
 	if req.Status == models.RequestStatusCancelled {
 		// Offers are cancelled only by CancelOtherRequests, i.e. because
@@ -943,6 +1019,11 @@ func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, ride
 	}
 	if deliveryOrder.AssignedRiderID != nil {
 		return nil, fmt.Errorf("order already assigned to another rider")
+	}
+	if !deliveryOrder.IsGrocery() {
+		if err := s.deliveryRepo.ClaimFoodOrder(ctx, tx, req.OrderID, riderID, s.searchRadiusKm); err != nil {
+			return nil, err
+		}
 	}
 
 	// Accept the request
@@ -1147,47 +1228,24 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 		s.ensureAssignmentRecorded(ctx, deliveryOrder, riderID, snap)
 	}
 
-	if err := s.deliveryRepo.UpdateDeliveryTimestamp(ctx, nil, deliveryOrder.DeliveryOrderID, newStatus); err != nil {
-		return rejectStatus(orderID, riderID, oldStatus, newStatus,
-			ErrCodeStatusWriteFailed, dispatchtrace.ReasonStatusWriteFailed, "failed to save delivery status",
-			dispatchtrace.Fields{"error": dispatchtrace.ErrorText(err)})
+	changed, err := s.deliveryRepo.AdvanceDelivery(ctx, deliveryOrder, riderID, newStatus)
+	if err != nil {
+		return rejectStatus(orderID, riderID, oldStatus, newStatus, ErrCodeStatusWriteFailed,
+			dispatchtrace.ReasonStatusWriteFailed, "failed to save delivery status; refresh and retry", nil)
 	}
-	_ = s.deliveryRepo.RecordStatusHistory(ctx, nil, deliveryOrder.OrderID, oldStatus, newStatus, riderID)
-
-	log.Printf("[DELIVERY] Order %d status updated to %s by rider %s", orderID, newStatus, riderID)
+	if !changed {
+		return nil
+	}
 	dispatchtrace.Emit(dispatchtrace.EventDeliveryStatusUpdated, dispatchtrace.Fields{
-		"order_id":    orderID,
-		"rider_id":    riderID,
-		"from_status": oldStatus,
-		"to_status":   newStatus,
-		"result":      "ok",
+		"order_id": orderID, "rider_id": riderID, "from_status": oldStatus, "to_status": newStatus, "result": "ok",
 	})
-
-	isRestaurantOwned := deliveryOrder.RestaurantOwned
-
-	// On delivered: free the rider, but skip platform payout for restaurant-owned
 	if newStatus == models.DeliveryStatusDelivered {
-		_ = s.deliveryRepo.SetRiderFree(ctx, nil, riderID)
-		_ = s.riderRepo.SetAvailability(ctx, riderID, true)
+		if availability, err := s.deliveryRepo.GetRiderAvailability(ctx, riderID); err == nil {
+			_ = s.riderRepo.SetAvailability(ctx, riderID, availability.IsOnline)
+		}
 		_ = s.riderRepo.SetOnTrip(ctx, riderID, false)
-		if s.dispatchCache != nil && s.dispatchCache.Enabled() {
-			if err := s.dispatchCache.UpdateRiderAvailability(ctx, riderID, true, true, nil); err != nil {
-				log.Printf("[DELIVERY] Redis rider free update failed rider_id=%s order_id=%d err=%v", riderID, orderID, err)
-			}
-		}
-		log.Printf("[DELIVERY] Rider %s is now free after delivering order %d", riderID, orderID)
-
-		if isRestaurantOwned {
-			log.Printf("[DELIVERY] Skipping platform payout for restaurant-owned order %d", orderID)
-		} else {
-			// Add automatic earnings creation on delivery completion
-			_ = s.deliveryRepo.RecordEarning(ctx, nil, riderID, orderID, "delivery_fee", 30.00, "Base delivery payout", deliveryOrder.OrderType)
-			log.Printf("[DELIVERY] Recorded base delivery payout for order %d to rider %s", orderID, riderID)
-		}
-
 		s.notifyRiderReferral(ctx, riderID, orderID)
 	}
-
 	// Projection-only event for rider-service consumers. Customer lifecycle
 	// screens consume the canonical restaurant-service WebSocket.
 	s.hub.SendToOrder(strconv.Itoa(orderID), ws.WSMessage{
