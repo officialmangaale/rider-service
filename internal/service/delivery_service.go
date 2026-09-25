@@ -1110,6 +1110,9 @@ func (s *DeliveryService) RejectRequest(ctx context.Context, requestID int, ride
 	if req.RiderID != riderID {
 		return fmt.Errorf("request does not belong to this rider")
 	}
+	if req.Status == models.RequestStatusRejected {
+		return nil // A retry after a lost decline response is already complete.
+	}
 	if req.Status != models.RequestStatusPending {
 		return fmt.Errorf("request already responded to")
 	}

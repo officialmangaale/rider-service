@@ -580,10 +580,20 @@ func (r *DeliveryRepository) AcceptRequest(ctx context.Context, tx *sql.Tx, requ
 }
 
 func (r *DeliveryRepository) RejectRequest(ctx context.Context, requestID int) error {
-	_, err := r.db.ExecContext(ctx,
-		`UPDATE delivery_order_requests SET status='rejected', updated_at=NOW() WHERE request_id=$1 AND status='pending'`,
+	result, err := r.db.ExecContext(ctx,
+		`UPDATE delivery_order_requests SET status='rejected', updated_at=NOW() WHERE request_id=$1 AND status='pending' AND expires_at>NOW()`,
 		requestID)
-	return err
+	if err != nil {
+		return err
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if affected == 0 {
+		return fmt.Errorf("request expired or already responded to")
+	}
+	return nil
 }
 
 func (r *DeliveryRepository) CancelOtherRequests(ctx context.Context, tx *sql.Tx, deliveryOrderID int, exceptRequestID int) ([]string, error) {
