@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -46,6 +47,19 @@ func main() {
 
 	deliveryRepo := repository.NewDeliveryRepository(db)
 	riderRepo := repository.NewRiderRepository(db)
+
+	// A database that predates migrations 078/095/096/097 makes every food
+	// dispatch fail with nothing but "Searching for a rider" on the restaurant
+	// screen. Say so once, loudly, at boot. Log-only: it never stops the service.
+	schemaCtx, cancelSchema := context.WithTimeout(context.Background(), 5*time.Second)
+	if gaps, err := deliveryRepo.DispatchSchemaGaps(schemaCtx); err != nil {
+		log.Printf("[WARN] Dispatch schema check failed: %v", err)
+	} else if len(gaps) > 0 {
+		log.Printf("[ERROR] ONLINE FOOD DISPATCH CANNOT RUN: database is missing [%s]. Apply restaurant-service/migrations 078, 095, 096, 097 in that order, then enable dispatch for a restaurant allowlist (docs/online-delivery-flow.md). Until then no food offer can be created, listed or accepted.", strings.Join(gaps, "; "))
+	} else {
+		log.Println("[INFO] Dispatch schema ready (078, 095, 096, 097)")
+	}
+	cancelSchema()
 
 	dispatchCache, err := dispatchcache.NewRedisDispatchCache(cfg.RedisURL)
 	if err != nil {

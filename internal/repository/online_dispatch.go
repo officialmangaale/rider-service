@@ -266,3 +266,39 @@ func (r *DeliveryRepository) RequestForLegacyAssignment(ctx context.Context, ord
         WHERE d.order_type='food' AND d.order_id=$1 AND r.rider_id=$2`, orderID, riderID).Scan(&id)
 	return id, err
 }
+
+// dispatchSchemaChecks are the database objects online food dispatch cannot run
+// without, each tied to the migration that creates it (restaurant-service/
+// migrations). Every dispatch gate, the offer query and the recovery worker fail
+// on a missing one, and the SQS message is retried away with no rider-facing
+// symptom other than "Searching for a rider".
+var dispatchSchemaChecks = []struct{ migration, object, present string }{
+	{"078_offline_order_identity", "orders.creation_source",
+		`EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'orders' AND column_name = 'creation_source')`},
+	{"096_grocery_platform_delivery", "delivery_orders.order_type",
+		`EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'delivery_orders' AND column_name = 'order_type')`},
+	{"096_grocery_platform_delivery", "delivery_order_requests.order_type",
+		`EXISTS (SELECT 1 FROM information_schema.columns WHERE table_schema = current_schema() AND table_name = 'delivery_order_requests' AND column_name = 'order_type')`},
+	{"097_online_delivery_dispatch", "online_delivery_dispatch_config",
+		`to_regclass('online_delivery_dispatch_config') IS NOT NULL`},
+	{"097_online_delivery_dispatch", "mangaale_dispatch_enabled()",
+		`to_regprocedure('mangaale_dispatch_enabled(bigint)') IS NOT NULL`},
+	{"097_online_delivery_dispatch", "mangaale_online_delivery()",
+		`to_regprocedure('mangaale_online_delivery(text,boolean,jsonb,text,bigint,bigint)') IS NOT NULL`},
+}
+
+// DispatchSchemaGaps lists "migration: object" for every object dispatch needs
+// that this database lacks. It is read-only and empty when the schema is ready.
+func (r *DeliveryRepository) DispatchSchemaGaps(ctx context.Context) ([]string, error) {
+	var gaps []string
+	for _, check := range dispatchSchemaChecks {
+		var present bool
+		if err := r.db.QueryRowContext(ctx, `SELECT `+check.present).Scan(&present); err != nil {
+			return nil, err
+		}
+		if !present {
+			gaps = append(gaps, check.migration+": "+check.object)
+		}
+	}
+	return gaps, nil
+}
