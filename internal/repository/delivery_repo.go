@@ -18,11 +18,13 @@ type DeliveryRepository struct {
 }
 
 type RiderEligibilitySummary struct {
-	OnlineRiders       int
-	AvailableRiders    int
-	RidersWithLocation int
-	RidersWithFreshGPS int
-	RidersWithinRadius int
+	OnlineRiders            int
+	AccountEligibleRiders   int
+	AvailableRiders         int
+	RidersWithLocation      int
+	RidersWithValidLocation int
+	RidersWithFreshGPS      int
+	RidersWithinRadius      int
 }
 
 func NewDeliveryRepository(db *sql.DB) *DeliveryRepository {
@@ -836,42 +838,54 @@ func (r *DeliveryRepository) GetRiderEligibilitySummary(
 				ra.is_online,
 				ra.is_available,
 				ra.current_order_id,
+				COALESCE(u.id IS NOT NULL AND NOT COALESCE(u.is_deleted,false) AND COALESCE(u.status,'active')='active'
+                    AND u.primary_role IN ('rider','delivery_driver') AND NOT COALESCE(ra.is_deleted,false)
+                    AND NOT COALESCE(rl.is_deleted,false),false) AS account_eligible,
 				rl.rider_id IS NOT NULL AS has_location,
-				COALESCE(rl.last_updated_at >= NOW() - INTERVAL '5 minutes', false) AS has_fresh_location,
+				COALESCE(rl.latitude BETWEEN -90 AND 90 AND rl.longitude BETWEEN -180 AND 180,false) AS valid_location,
+				COALESCE(rl.last_updated_at <= NOW() AND rl.last_updated_at >= NOW() - make_interval(secs =>
+                    (SELECT location_max_age_seconds FROM online_delivery_dispatch_config WHERE singleton)), false) AS has_fresh_location,
 				CASE
 					WHEN rl.rider_id IS NULL THEN NULL
 					ELSE (6371 * acos(
-						LEAST(1.0, cos(radians($1)) * cos(radians(rl.latitude))
+						LEAST(1.0, GREATEST(-1.0, cos(radians($1)) * cos(radians(rl.latitude))
 						* cos(radians(rl.longitude) - radians($2))
-						+ sin(radians($1)) * sin(radians(rl.latitude)))
+						+ sin(radians($1)) * sin(radians(rl.latitude))))
 					))
 				END AS distance_km
 			FROM rider_availability ra
 			LEFT JOIN rider_locations rl ON rl.rider_id = ra.rider_id
+			LEFT JOIN users u ON u.id::text=ra.rider_id
 		)
 		SELECT
 			COUNT(*) FILTER (WHERE is_online),
+			COUNT(*) FILTER (WHERE is_online AND account_eligible),
 			COUNT(*) FILTER (
-				WHERE is_online AND is_available AND current_order_id IS NULL
+				WHERE is_online AND account_eligible AND is_available AND current_order_id IS NULL
 			),
 			COUNT(*) FILTER (
-				WHERE is_online AND is_available AND current_order_id IS NULL AND has_location
+				WHERE is_online AND account_eligible AND is_available AND current_order_id IS NULL AND has_location
 			),
 			COUNT(*) FILTER (
-				WHERE is_online AND is_available AND current_order_id IS NULL
-				  AND has_location AND has_fresh_location
+				WHERE is_online AND account_eligible AND is_available AND current_order_id IS NULL AND has_location AND valid_location
 			),
 			COUNT(*) FILTER (
-				WHERE is_online AND is_available AND current_order_id IS NULL
-				  AND has_location AND has_fresh_location AND distance_km <= $3
+				WHERE is_online AND account_eligible AND is_available AND current_order_id IS NULL
+				  AND has_location AND valid_location AND has_fresh_location
+			),
+			COUNT(*) FILTER (
+				WHERE is_online AND account_eligible AND is_available AND current_order_id IS NULL
+				  AND has_location AND valid_location AND has_fresh_location AND distance_km <= $3
 			)
 		FROM rider_candidates`
 
 	var summary RiderEligibilitySummary
 	err := r.db.QueryRowContext(ctx, query, pickupLat, pickupLng, radiusKm).Scan(
 		&summary.OnlineRiders,
+		&summary.AccountEligibleRiders,
 		&summary.AvailableRiders,
 		&summary.RidersWithLocation,
+		&summary.RidersWithValidLocation,
 		&summary.RidersWithFreshGPS,
 		&summary.RidersWithinRadius,
 	)

@@ -259,6 +259,7 @@ func (t Trace) Covers(orderID int, now time.Time) bool {
 // RiderDecision is one rider's result for each dispatch filter, in the order
 // FindNearestRiders applies them.
 type RiderDecision struct {
+	PolicyFailure   string
 	AvailabilityRow bool
 	Online          bool
 	Available       bool
@@ -275,6 +276,8 @@ func (d RiderDecision) FirstFailure() string {
 	switch {
 	case !d.AvailabilityRow:
 		return "rider_availability_missing"
+	case d.PolicyFailure != "":
+		return d.PolicyFailure
 	case !d.Online:
 		return "rider_not_online"
 	case !d.Available:

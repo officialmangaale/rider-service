@@ -140,6 +140,25 @@ func (r *DeliveryRepository) FoodDispatchAllowed(ctx context.Context, orderID in
 	return allowed, err
 }
 
+// FoodDispatchBlockReason diagnoses a rejected event without changing policy.
+// Read only on the rejection path; never log customer data or coordinates.
+func (r *DeliveryRepository) FoodDispatchBlockReason(ctx context.Context, orderID int) (string, error) {
+	var reason string
+	err := r.db.QueryRowContext(ctx, `SELECT CASE
+        WHEN NOT (`+onlineFoodPredicate+`) THEN 'excluded_order_source_or_type'
+        WHEN NOT mangaale_dispatch_enabled(o.restaurant_id) THEN 'dispatch_disabled_or_restaurant_not_enabled'
+        WHEN o.is_deleted THEN 'order_deleted'
+        WHEN lower(o.order_status::text) NOT IN ('preparing','ready') THEN 'order_not_preparing_or_ready'
+        WHEN COALESCE(o.assigned_rider_user_id,'')<>'' OR COALESCE(o.delivery_partner_id,'')<>'' OR o.rider_id IS NOT NULL THEN 'order_already_assigned'
+        WHEN o.picked_up_at IS NOT NULL OR o.delivered_at IS NOT NULL THEN 'order_already_picked_up_or_delivered'
+        WHEN o.created_at < NOW()-make_interval(secs => (SELECT search_max_age_seconds FROM online_delivery_dispatch_config WHERE singleton)) THEN 'dispatch_search_expired'
+        ELSE 'order_changed_or_policy_incomplete' END FROM orders o WHERE o.order_id=$1`, orderID).Scan(&reason)
+	if err == sql.ErrNoRows {
+		return "order_missing", nil
+	}
+	return reason, err
+}
+
 // LockFoodOrder precedes the delivery/request/rider locks everywhere in the new
 // flow. Restaurant cancellation updates this same row, serializing with accept.
 func (r *DeliveryRepository) LockFoodOrder(ctx context.Context, tx *sql.Tx, orderID int) error {

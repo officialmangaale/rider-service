@@ -100,10 +100,16 @@ func (s *DeliveryService) ProcessOrderPlacedEvent(ctx context.Context, evt *mode
 			return err
 		}
 		if !allowed {
+			reason, diagnosticErr := s.deliveryRepo.FoodDispatchBlockReason(ctx, evt.OrderID)
+			if diagnosticErr != nil {
+				return fmt.Errorf("dispatch exclusion lookup: %w", diagnosticErr)
+			}
+			log.Printf("[DELIVERY] Dispatch excluded order_id=%d reason_code=%s", evt.OrderID, reason)
 			return nil
 		}
 		if err := s.deliveryRepo.RefreshFoodEvent(ctx, evt); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
+				log.Printf("[DELIVERY] Dispatch excluded order_id=%d reason_code=pickup_missing_invalid_or_order_no_longer_offerable", evt.OrderID)
 				return nil
 			}
 			return err
@@ -605,10 +611,12 @@ func (s *DeliveryService) traceEligibility(ctx context.Context, trigger string, 
 			fields["online"] = summary.OnlineRiders
 			// Riders removed by each filter, in the order the search applies them.
 			fields["rejected_counts"] = map[string]int{
-				"rider_not_available":    summary.OnlineRiders - summary.AvailableRiders,
-				"rider_location_missing": summary.AvailableRiders - summary.RidersWithLocation,
-				"rider_location_stale":   summary.RidersWithLocation - summary.RidersWithFreshGPS,
-				"rider_outside_radius":   summary.RidersWithFreshGPS - summary.RidersWithinRadius,
+				"rider_account_or_state_ineligible": summary.OnlineRiders - summary.AccountEligibleRiders,
+				"rider_not_available":               summary.AccountEligibleRiders - summary.AvailableRiders,
+				"rider_location_missing":            summary.AvailableRiders - summary.RidersWithLocation,
+				"rider_location_invalid":            summary.RidersWithLocation - summary.RidersWithValidLocation,
+				"rider_location_stale_or_future":    summary.RidersWithValidLocation - summary.RidersWithFreshGPS,
+				"rider_outside_radius":              summary.RidersWithFreshGPS - summary.RidersWithinRadius,
 			}
 			fields["would_be_eligible"] = summary.RidersWithinRadius
 		}

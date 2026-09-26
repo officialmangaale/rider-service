@@ -38,8 +38,8 @@ func captureDispatch(t *testing.T) *[]string {
 
 func expectFunnel(mock sqlmock.Sqlmock, online, available, withLocation, fresh, within int) {
 	mock.ExpectQuery(regexp.QuoteMeta("WITH rider_candidates AS")).
-		WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c", "d", "e"}).
-			AddRow(online, available, withLocation, fresh, within))
+		WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c", "d", "e", "f", "g"}).
+			AddRow(online, online, available, withLocation, withLocation, fresh, within))
 }
 
 const pickupLat, pickupLng = 28.4139396, 77.0422375
@@ -81,7 +81,7 @@ func TestNoRidersReportsWhichFilterRemovedThem(t *testing.T) {
 	for _, want := range []string{
 		"event=dispatch.no_eligible_riders",
 		"reason_code=no_eligible_riders",
-		"rejected_counts=rider_location_missing:0,rider_location_stale:5,rider_not_available:0,rider_outside_radius:1",
+		"rejected_counts=rider_account_or_state_ineligible:0,rider_location_invalid:0,rider_location_missing:0,rider_location_stale_or_future:5,rider_not_available:0,rider_outside_radius:1",
 	} {
 		if !strings.Contains(line, want) {
 			t.Errorf("missing %q in %q", want, line)
@@ -104,8 +104,8 @@ func TestTheTargetRiderVectorNeedsAnActiveTrace(t *testing.T) {
 	svc.SetTrace(dispatchtrace.Trace{OrderID: 13294, RiderID: "rider-1", Until: time.Now().Add(time.Hour)})
 	mock.ExpectQuery(regexp.QuoteMeta("FROM (SELECT $1::text AS rider_id) target")).
 		WithArgs("rider-1", pickupLat, pickupLng).
-		WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c", "d", "e", "f", "g", "h"}).
-			AddRow(true, true, true, true, true, true, int64(40), 0.2))
+		WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}).
+			AddRow(true, true, true, true, true, true, int64(40), 0.2, ""))
 	*lines = nil
 
 	svc.traceEligibility(context.Background(), "order_event", 13294, 17, pickupLat, pickupLng, riders, nil)
@@ -133,8 +133,8 @@ func TestDispatchEventsNeverContainCoordinates(t *testing.T) {
 	expectFunnel(mock, 1, 1, 1, 1, 1)
 	svc.SetTrace(dispatchtrace.Trace{RiderID: "rider-1", Until: time.Now().Add(time.Hour)})
 	mock.ExpectQuery(regexp.QuoteMeta("target")).
-		WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c", "d", "e", "f", "g", "h"}).
-			AddRow(true, true, true, true, true, false, int64(12035), 0.0023))
+		WillReturnRows(sqlmock.NewRows([]string{"a", "b", "c", "d", "e", "f", "g", "h", "i"}).
+			AddRow(true, true, true, true, true, false, int64(12035), 0.0023, ""))
 
 	svc.traceEligibility(context.Background(), "order_event", 13294, 17, pickupLat, pickupLng, nil, errors.New("boom"))
 
