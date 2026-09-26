@@ -1,5 +1,7 @@
 package dto
 
+import "strings"
+
 // UpdateProfileRequest for rider profile fields in users table.
 type UpdateProfileRequest struct {
 	FirstName   *string `json:"first_name"`
@@ -87,8 +89,37 @@ type DeliveryProofRequest struct {
 
 // DeviceTokenRequest for push notification registration.
 type DeviceTokenRequest struct {
-	Platform  string `json:"platform" binding:"required"` // "android", "ios"
-	PushToken string `json:"push_token" binding:"required"`
+	Platform string `json:"platform" binding:"required"` // "android", "ios"
+
+	// The token is accepted under either key. The rider app has always sent
+	// `device_token`, while this endpoint required `push_token`, so every
+	// registration from those builds was rejected as a validation error and
+	// no rider's phone could ever be pushed to. Accepting both means installed
+	// builds start registering on their next launch, without an app update.
+	PushToken   string `json:"push_token"`
+	DeviceToken string `json:"device_token"`
+}
+
+// Token returns the registration token, whichever key carried it.
+func (r DeviceTokenRequest) Token() string {
+	if token := strings.TrimSpace(r.PushToken); token != "" {
+		return token
+	}
+	return strings.TrimSpace(r.DeviceToken)
+}
+
+// DeviceTokenRemoveRequest unregisters a push token at sign-out.
+type DeviceTokenRemoveRequest struct {
+	PushToken   string `json:"push_token"`
+	DeviceToken string `json:"device_token"`
+}
+
+// Token returns the token to forget, whichever key carried it.
+func (r DeviceTokenRemoveRequest) Token() string {
+	if token := strings.TrimSpace(r.PushToken); token != "" {
+		return token
+	}
+	return strings.TrimSpace(r.DeviceToken)
 }
 
 // PaginationQuery for paginated list endpoints.

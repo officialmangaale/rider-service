@@ -145,6 +145,7 @@ func Setup(
 	notifications := auth.Group("/notifications")
 	{
 		notifications.POST("/device-token", notifH.RegisterDeviceToken)
+		notifications.DELETE("/device-token", notifH.UnregisterDeviceToken)
 		notifications.GET("", notifH.ListNotifications)
 		notifications.PUT("/:id/read", notifH.MarkRead)
 		notifications.PUT("/read-all", notifH.MarkAllRead)

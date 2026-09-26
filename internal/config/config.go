@@ -37,6 +37,16 @@ type Config struct {
 	// offered again. 0 turns re-dispatch off, restoring the old behaviour
 	// where an order that found no rider at dispatch stayed unmatched.
 	RedispatchIntervalSeconds int
+
+	// Device push (FCM HTTP v1) for delivery offers. Off unless a service
+	// account is configured: without one, offers still reach riders over the
+	// socket and the app's polling, exactly as before.
+	//
+	// The service account must belong to the Firebase project of the rider
+	// app (its google-services.json project_id) and be allowed to send
+	// messages (role "Firebase Cloud Messaging API Admin" or "Firebase Admin").
+	FCMServiceAccount string // FCM_SERVICE_ACCOUNT_JSON: JSON, or base64 of it
+	FCMProjectID      string // FCM_PROJECT_ID: optional, defaults to the account's project_id
 }
 
 // Load reads configuration from environment variables.
@@ -65,6 +75,19 @@ func Load() (*Config, error) {
 		RequestExpirySeconds: getEnvInt("REQUEST_EXPIRY_SECONDS", 30),
 
 		RedispatchIntervalSeconds: getEnvInt("REDISPATCH_INTERVAL_SECONDS", 20),
+
+		FCMServiceAccount: firstNonEmptyEnv("FCM_SERVICE_ACCOUNT_JSON"),
+		FCMProjectID:      firstNonEmptyEnv("FCM_PROJECT_ID"),
+	}
+	// A key file is the usual way to hand a service account to a container.
+	if cfg.FCMServiceAccount == "" {
+		if path := firstNonEmptyEnv("FCM_SERVICE_ACCOUNT_FILE", "GOOGLE_APPLICATION_CREDENTIALS"); path != "" {
+			raw, err := os.ReadFile(path)
+			if err != nil {
+				return nil, fmt.Errorf("FCM service account file %q: %w", path, err)
+			}
+			cfg.FCMServiceAccount = string(raw)
+		}
 	}
 
 	if cfg.DatabaseURL == "" {

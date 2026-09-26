@@ -16,6 +16,7 @@ import (
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/debug"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/push"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
 )
@@ -43,6 +44,28 @@ type DeliveryService struct {
 	// background tracks fire-and-forget work (acceptance-time assignment
 	// sync) so tests can wait for it; production never waits.
 	background sync.WaitGroup
+
+	// offerPusher wakes a rider's phone for an offer. Nil (no FCM credentials)
+	// leaves delivery exactly as it was: socket plus the app's polling.
+	offerPusher OfferPusher
+}
+
+// OfferPusher delivers offer events to a rider's devices. push.Notifier is the
+// production implementation.
+//
+// Implementations must return immediately and never fail dispatch: the offer
+// row and the socket message are the offer, a push is only a way to reach an
+// app that has no socket.
+type OfferPusher interface {
+	OfferCreated(riderID string, offer push.Offer)
+	OfferClosed(riderID string, closure push.OfferClosure)
+}
+
+// SetOfferPusher enables device push for offers. A setter rather than a
+// constructor argument so every existing caller keeps compiling unchanged and
+// the default stays off.
+func (s *DeliveryService) SetOfferPusher(pusher OfferPusher) {
+	s.offerPusher = pusher
 }
 
 // SetRiderReferralEnabled turns the rider-referral qualification callback on.
@@ -448,8 +471,36 @@ func (s *DeliveryService) sendOffers(ctx context.Context, deliveryOrder *models.
 			publish["reason_code"] = dispatchtrace.ReasonSocketBackpressure
 		}
 		dispatchtrace.Emit(dispatchtrace.EventOfferPublish, publish)
+
+		// Also wake the rider's phone. A socket open in the app says nothing
+		// about the app being on screen, and a rider with the app closed has no
+		// socket at all; the push is what reaches them. It is sent whether or
+		// not a socket exists, and the app collapses the two by request id.
+		s.pushOffer(deliveryOrder, req, rider.RiderID, rider.DistanceKm, expiresAt)
 	}
 	return offered
+}
+
+// pushOffer sends the device push for one persisted offer. It never blocks and
+// never fails the dispatch.
+func (s *DeliveryService) pushOffer(order *models.DeliveryOrder, req *models.DeliveryOrderRequest, riderID string, distanceKm float64, expiresAt time.Time) {
+	if s.offerPusher == nil {
+		return
+	}
+	deliveryDistance := approximateDeliveryDistance(order)
+	s.offerPusher.OfferCreated(riderID, push.Offer{
+		RequestID:          req.RequestID,
+		OrderID:            order.OrderID,
+		OrderType:          models.NormalizeSourceOrderType(order.OrderType),
+		RestaurantName:     order.RestaurantName,
+		PickupAddress:      order.PickupAddress,
+		DeliveryArea:       push.DeliveryAreaLabel(deliveryDistance),
+		DistanceKm:         distanceKm,
+		DeliveryDistanceKm: deliveryDistance,
+		Amount:             order.Amount,
+		PaymentMode:        order.PaymentMode,
+		ExpiresAt:          expiresAt,
+	})
 }
 
 // RedispatchOrder offers an unmatched platform delivery order to the riders
@@ -1091,6 +1142,9 @@ func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, ride
 
 	// Notify other riders that order is taken
 	s.notifyOtherRiders(ctx, req.DeliveryOrderID, riderID, req.OrderID, cancelledRiderIDs)
+	// ...and take the offer off their lock screens: the socket message above
+	// only reaches an app that is running.
+	s.pushOffersClosed(deliveryOrder.OrderType, req.OrderID, riderID, cancelledRiderIDs)
 
 	// Notify customer
 	s.hub.SendToOrder(strconv.Itoa(req.OrderID), ws.WSMessage{
@@ -1366,6 +1420,25 @@ func (s *DeliveryService) notifyOtherRiders(ctx context.Context, deliveryOrderID
 		}
 	}
 	log.Printf("[DELIVERY] Notified %d other riders about order %d assignment", len(cancelledRiderIDs), orderID)
+}
+
+// pushOffersClosed tells the devices of riders whose offers were withdrawn
+// because someone else accepted that the offer is gone, so their notification
+// (and its Accept button) is removed rather than left to fail when tapped.
+func (s *DeliveryService) pushOffersClosed(orderType string, orderID int, acceptedRiderID string, riderIDs []string) {
+	if s.offerPusher == nil {
+		return
+	}
+	for _, riderID := range riderIDs {
+		if riderID == acceptedRiderID {
+			continue
+		}
+		s.offerPusher.OfferClosed(riderID, push.OfferClosure{
+			OrderID:   orderID,
+			OrderType: models.NormalizeSourceOrderType(orderType),
+			Reason:    push.ReasonAssignedToOther,
+		})
+	}
 }
 
 func (s *DeliveryService) checkAllRequestsDone(ctx context.Context, deliveryOrderID int) {
