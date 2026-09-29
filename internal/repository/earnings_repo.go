@@ -53,6 +53,23 @@ func (r *EarningsRepository) GetSummary(ctx context.Context, riderID string) (*m
 	if err != nil {
 		return nil, err
 	}
+
+	// Wallet fields (Module 11 ledger) — a rider with no wallet activity yet
+	// has no rows in either table, which is 0, not an error.
+	balance, err := GetWalletBalance(ctx, r.db, riderID)
+	if err != nil {
+		return nil, err
+	}
+	s.WalletBalance = balance
+	if balance > 0 {
+		s.PendingPayout = balance
+	}
+	if err := r.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(amount_paid), 0) FROM rider_settlements WHERE rider_id = $1`, riderID,
+	).Scan(&s.SettledPayout); err != nil {
+		return nil, err
+	}
+
 	return &s, nil
 }
 

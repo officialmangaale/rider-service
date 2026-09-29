@@ -51,9 +51,10 @@ func Setup(
 	riderH := handler.NewRiderHandler(riderSvc)
 	orderH := handler.NewOrderHandler(orderSvc)
 	locationH := handler.NewLocationHandler(locationSvc)
-	earningsH := handler.NewEarningsHandler(earningsSvc)
+	earningsH := handler.NewEarningsHandler(earningsSvc, db)
 	notifH := handler.NewNotificationHandler(notifSvc)
 	deliveryH := handler.NewDeliveryHandler(deliverySvc)
+	adminRiderH := handler.NewAdminRiderHandler(db)
 
 	// ==================== PUBLIC ROUTES ====================
 	r.GET("/health", healthH.Health)
@@ -139,6 +140,29 @@ func Setup(
 	{
 		earnings.GET("/summary", earningsH.GetSummary)
 		earnings.GET("/history", earningsH.GetHistory)
+		// Self-service wallet ledger (platform upgrade Module 21) — same
+		// data Module 10's admin view reads, scoped to the caller's own ID.
+		earnings.GET("/wallet/transactions", earningsH.GetWalletTransactions)
+		earnings.GET("/wallet/settlements", earningsH.GetSettlements)
+	}
+
+	// --- Admin: Rider Management (platform upgrade Module 10/11) ---
+	adminRiders := auth.Group("/admin/riders")
+	adminRiders.Use(middleware.RequireAdmin())
+	{
+		adminRiders.GET("", adminRiderH.ListRiders)
+		adminRiders.GET("/:riderId/wallet/transactions", adminRiderH.GetWalletTransactions)
+		adminRiders.GET("/:riderId/settlements", adminRiderH.GetSettlements)
+		adminRiders.POST("/:riderId/settlements", adminRiderH.CreateSettlement)
+		adminRiders.POST("/:riderId/wallet/adjustments", adminRiderH.CreateWalletAdjustment)
+	}
+
+	// --- Admin: Reports and Exports (platform upgrade Module 24) ---
+	adminRiderReports := auth.Group("/admin/reports/riders")
+	adminRiderReports.Use(middleware.RequireAdmin())
+	{
+		adminRiderReports.GET("/wallet-transactions/export-csv", adminRiderH.ExportWalletTransactionsCSV)
+		adminRiderReports.GET("/settlements/export-csv", adminRiderH.ExportSettlementsCSV)
 	}
 
 	// --- Notifications ---

@@ -87,6 +87,22 @@ func GetUserRole(c *gin.Context) string {
 	return s
 }
 
+// RequireAdmin gates a route group to callers whose JWT "role" claim is
+// "admin". Must run after AuthMiddleware. rider-service has no granular
+// permission tiers (unlike restaurant-service's roleRepo-backed
+// RequirePermission) — that is a future module's scope; today "admin" is a
+// single flat role.
+func RequireAdmin() gin.HandlerFunc {
+	return func(c *gin.Context) {
+		if GetUserRole(c) != "admin" {
+			dto.Forbidden(c, "Admin access required")
+			c.Abort()
+			return
+		}
+		c.Next()
+	}
+}
+
 // CORSMiddleware adds permissive CORS headers.
 func CORSMiddleware() gin.HandlerFunc {
 	return func(c *gin.Context) {

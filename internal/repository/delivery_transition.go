@@ -68,7 +68,34 @@ func (r *DeliveryRepository) AdvanceDelivery(ctx context.Context, order *models.
 			if err = r.RecordEarning(ctx, tx, riderID, order.OrderID, "delivery_fee", 30.00, "Base delivery payout", order.OrderType); err != nil {
 				return false, err
 			}
+			// Platform upgrade Module 11: mirror the same earning into the
+			// rider's net-payable wallet ledger — a separate concern from
+			// rider_earnings (gross earnings history). The wallet balance is
+			// what the platform currently owes the rider net of any COD cash
+			// the rider still holds, which rider_earnings alone can't express.
+			// Gated on !RestaurantOwned exactly like the payout above: a
+			// restaurant-owned rider's arrangement (earnings and any COD
+			// they collect) is with that restaurant, not the platform.
+			orderID := order.OrderID
+			if _, err = PostWalletTransaction(ctx, tx, riderID, models.WalletTxnDeliveryEarning, 30.00,
+				&orderID, nil, nil, nil, nil); err != nil {
+				return false, err
+			}
+			if isCODPaymentMode(order.PaymentMode) && order.Amount > 0 {
+				note := "COD cash collected on delivery"
+				if _, err = PostWalletTransaction(ctx, tx, riderID, models.WalletTxnCashCollected, -order.Amount,
+					&orderID, nil, nil, &note, nil); err != nil {
+					return false, err
+				}
+			}
 		}
 	}
 	return true, tx.Commit()
+}
+
+// isCODPaymentMode mirrors the check already used at the order-status-update
+// gate (internal/service/delivery_service.go) that requires cash-collection
+// confirmation before a COD order can reach "delivered".
+func isCODPaymentMode(paymentMode string) bool {
+	return paymentMode == "cod" || paymentMode == "cash"
 }
