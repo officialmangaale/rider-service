@@ -86,7 +86,7 @@ func TestGroceryAndFoodOrderIDsDoNotCollide(t *testing.T) {
 	// The same numeric id, one food order and one grocery order. Before the
 	// order type was part of the key this was impossible: the second one
 	// silently updated the first.
-	if _, err := l.db.Exec(`INSERT INTO orders (order_id, restaurant_id, order_status) VALUES (777, 27, 'confirmed')`); err != nil {
+	if _, err := l.db.Exec(`INSERT INTO orders (order_id, restaurant_id, order_status) VALUES (777, 27, 'preparing')`); err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
 	if err := l.svc.ProcessOrderPlacedEvent(ctx, confirmedOrderEvent(777)); err != nil {
@@ -184,7 +184,7 @@ func TestFoodOfferStillSaysFood(t *testing.T) {
 	l := newLifecycle(t)
 	e2eSeedRider(t, l.db, lcRider, 0.5)
 	ctx := context.Background()
-	if _, err := l.db.Exec(`INSERT INTO orders (order_id, restaurant_id, order_status) VALUES (888, 27, 'confirmed')`); err != nil {
+	if _, err := l.db.Exec(`INSERT INTO orders (order_id, restaurant_id, order_status) VALUES (888, 27, 'preparing')`); err != nil {
 		t.Fatal(err)
 	}
 	if err := l.svc.ProcessOrderPlacedEvent(ctx, confirmedOrderEvent(888)); err != nil {

@@ -166,8 +166,13 @@ type lifecycle struct {
 func newLifecycle(t *testing.T) *lifecycle {
 	t.Helper()
 	db := testpg.Open(t)
-	if _, err := db.Exec(testpg.LifecycleSchema); err != nil {
+	if err := testpg.ApplyLifecycle(db); err != nil {
 		t.Fatalf("lifecycle schema: %v", err)
+	}
+	// Dispatch reads the pickup location from the restaurant's own row.
+	if _, err := db.Exec(`INSERT INTO restaurants VALUES (27,'Test Kitchen','{"phone":"123"}',$1,$2,'Pickup',NULL)`,
+		e2ePickupLat, e2ePickupLng); err != nil {
+		t.Fatalf("seed restaurant: %v", err)
 	}
 	for _, r := range []struct{ id, first string }{{lcRider, "Aman"}, {lcOtherRider, "Other"}} {
 		if _, err := db.Exec(`INSERT INTO users (id, first_name, phone, primary_role, vehicle_type) VALUES ($1, $2, '+910000000001', 'delivery_driver', 'bike')`, r.id, r.first); err != nil {
@@ -267,13 +272,14 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 	t.Fatalf("timed out waiting for %s", what)
 }
 
-// Accepting records the rider on the customer's order: this is what makes
-// new_user_app stop showing "Finding a delivery partner".
+// Dispatch starts once the kitchen is preparing. Accepting records the rider on
+// the customer's order: this is what makes new_user_app stop showing
+// "Finding a delivery partner".
 func TestAcceptedRiderIsRecordedOnTheCustomerOrder(t *testing.T) {
 	l := newLifecycle(t)
 	e2eSeedRider(t, l.db, lcRider, 0.5)
 	e2eSeedRider(t, l.db, lcOtherRider, 1.0)
-	if _, err := l.db.Exec(`INSERT INTO orders (order_id, restaurant_id, order_status) VALUES (13356, 27, 'confirmed')`); err != nil {
+	if _, err := l.db.Exec(`INSERT INTO orders (order_id, restaurant_id, order_status) VALUES (13356, 27, 'preparing')`); err != nil {
 		t.Fatalf("seed order: %v", err)
 	}
 	ctx := context.Background()

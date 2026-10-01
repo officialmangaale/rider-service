@@ -20,7 +20,7 @@ import (
 // builds, which refresh on those, behave as before.
 func TestStatusRefusalCarriesAnErrorCodeAndTheCurrentStatus(t *testing.T) {
 	db := testpg.Open(t)
-	if _, err := db.Exec(testpg.LifecycleSchema); err != nil {
+	if err := testpg.ApplyLifecycle(db); err != nil {
 		t.Fatal(err)
 	}
 	const rider = "c6b46748-0000-4000-8000-000000000001"

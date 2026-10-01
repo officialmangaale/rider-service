@@ -4,7 +4,6 @@ import (
 	"context"
 	"database/sql"
 	"net/http/httptest"
-	"os"
 	"sync"
 	"testing"
 
@@ -47,39 +46,15 @@ func TestOnlineDispatchRepairsLostCompletionProjection(t *testing.T) {
 func onlineFixture(t *testing.T) (*sql.DB, *DeliveryService) {
 	t.Helper()
 	db := testpg.Open(t)
-	if _, err := db.Exec(testpg.LifecycleSchema); err != nil {
+	if err := testpg.ApplyLifecycle(db); err != nil {
 		t.Fatal(err)
 	}
-	_, err := db.Exec(`ALTER TABLE users ADD COLUMN is_deleted boolean DEFAULT false;
-        CREATE TABLE restaurants(restaurant_id bigint PRIMARY KEY,name text,metadata jsonb,latitude double precision,
-          longitude double precision,street_address text,user_id uuid);
-        ALTER TABLE orders ADD COLUMN is_qrunch boolean DEFAULT false,
-          ADD COLUMN metadata jsonb DEFAULT '{"order_source":"customer_web"}',
-          ADD COLUMN creation_source text, ADD COLUMN dining_session_id bigint, ADD COLUMN counter_id bigint,
-          ADD COLUMN created_at timestamptz DEFAULT now(), ADD COLUMN updated_at timestamptz DEFAULT now(),
-          ADD COLUMN picked_up_at timestamptz, ADD COLUMN delivered_at timestamptz, ADD COLUMN assigned_at timestamptz,
-          ADD COLUMN rider_assigned_at timestamptz, ADD COLUMN rider_name text, ADD COLUMN rider_phone text,
-          ADD COLUMN assigned_rider_name text, ADD COLUMN assigned_rider_phone text,ADD COLUMN rider_vehicle_type text,
-          ADD COLUMN rider_vehicle_number text, ADD COLUMN delivery_latitude double precision DEFAULT 28.43,
-          ADD COLUMN delivery_longitude double precision DEFAULT 77.04, ADD COLUMN delivery_address text DEFAULT 'Private address',
-          ADD COLUMN total_amount numeric DEFAULT 250, ADD COLUMN pay_by text DEFAULT 'card',
-          ADD COLUMN payment_status text DEFAULT 'pending';
-        INSERT INTO restaurants VALUES(27,'Test Kitchen','{"phone":"123"}',28.4139,77.0422,'Pickup',null);
+	_, err := db.Exec(`INSERT INTO restaurants VALUES(27,'Test Kitchen','{"phone":"123"}',28.4139,77.0422,'Pickup',null);
         INSERT INTO users(id,primary_role,first_name,phone) VALUES
           ('c6b46748-0000-4000-8000-000000000001','rider','First','111'),
           ('c6b46748-0000-4000-8000-000000000002','rider','Second','222');
         INSERT INTO orders(order_id,restaurant_id,order_status) VALUES(100,27,'preparing'),(101,27,'preparing');`)
 	if err != nil {
-		t.Fatal(err)
-	}
-	migration, err := os.ReadFile("../../../restaurant-service/migrations/097_online_delivery_dispatch.sql")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(string(migration)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = db.Exec(`UPDATE online_delivery_dispatch_config SET enabled=true`); err != nil {
 		t.Fatal(err)
 	}
 	e2eSeedRider(t, db, lcRider, 0.1)
@@ -402,5 +377,38 @@ func TestOnlineDispatchDirectReadyExpiryAndFreshLocationRecovery(t *testing.T) {
 	_ = db.QueryRow(`SELECT order_status,delivery_status FROM orders WHERE order_id=100`).Scan(&status, &delivery)
 	if status != "ready" || delivery != "dispatch_expired" {
 		t.Fatalf("expiry cancelled customer order: %s %s", status, delivery)
+	}
+}
+
+// The rider payout for a food order comes from its pricing snapshot, not a
+// hardcoded amount; an order without a snapshot keeps the legacy flat payout.
+func TestOnlineDispatchCompletionPaysSnapshotRiderCost(t *testing.T) {
+	db, s := onlineFixture(t)
+	if _, err := db.Exec(`CREATE TABLE order_pricing_snapshots(order_id bigint PRIMARY KEY, rider_cost_cents bigint NOT NULL DEFAULT 0);
+        INSERT INTO order_pricing_snapshots VALUES(100, 4550)`); err != nil {
+		t.Fatal(err)
+	}
+	onlineEvent(t, s, 100)
+	id, _ := requestFor(t, db, 100, lcRider)
+	if _, err := s.AcceptRequest(context.Background(), id, lcRider); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = db.Exec(`UPDATE orders SET order_status='delivered',delivered_at=NOW() WHERE order_id=100`)
+	if err := s.ReconcileFoodDispatches(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	var earned float64
+	if err := db.QueryRow(`SELECT amount FROM rider_earnings WHERE order_id=100 AND type='delivery_fee'`).Scan(&earned); err != nil {
+		t.Fatal(err)
+	}
+	if earned != 45.50 {
+		t.Fatalf("rider earning = %v, want 45.50 from the pricing snapshot", earned)
+	}
+	var walled float64
+	if err := db.QueryRow(`SELECT amount FROM rider_wallet_transactions WHERE order_id=100 AND transaction_type='delivery_earning'`).Scan(&walled); err != nil {
+		t.Fatal(err)
+	}
+	if walled != 45.50 {
+		t.Fatalf("wallet delivery_earning = %v, want 45.50", walled)
 	}
 }

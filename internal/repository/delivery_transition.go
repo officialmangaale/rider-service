@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"database/sql"
+	"errors"
 	"fmt"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 )
@@ -64,8 +66,13 @@ func (r *DeliveryRepository) AdvanceDelivery(ctx context.Context, order *models.
 			return false, err
 		}
 		if !order.RestaurantOwned {
-			// Existing payout policy; this change does not introduce a price.
-			if err = r.RecordEarning(ctx, tx, riderID, order.OrderID, "delivery_fee", 30.00, "Base delivery payout", order.OrderType); err != nil {
+			// Payout comes from the order's immutable pricing snapshot when one
+				// exists (single source of truth); otherwise the legacy flat payout.
+				payout, perr := r.riderPayoutFor(ctx, tx, order)
+				if perr != nil {
+					return false, perr
+				}
+			if err = r.RecordEarning(ctx, tx, riderID, order.OrderID, "delivery_fee", payout, "Base delivery payout", order.OrderType); err != nil {
 				return false, err
 			}
 			// Platform upgrade Module 11: mirror the same earning into the
@@ -77,7 +84,7 @@ func (r *DeliveryRepository) AdvanceDelivery(ctx context.Context, order *models.
 			// restaurant-owned rider's arrangement (earnings and any COD
 			// they collect) is with that restaurant, not the platform.
 			orderID := order.OrderID
-			if _, err = PostWalletTransaction(ctx, tx, riderID, models.WalletTxnDeliveryEarning, 30.00,
+			if _, err = PostWalletTransaction(ctx, tx, riderID, models.WalletTxnDeliveryEarning, payout,
 				&orderID, nil, nil, nil, nil); err != nil {
 				return false, err
 			}
@@ -91,6 +98,36 @@ func (r *DeliveryRepository) AdvanceDelivery(ctx context.Context, order *models.
 		}
 	}
 	return true, tx.Commit()
+}
+
+// legacyFlatRiderPayout is the payout used before per-order pricing snapshots
+// existed; it equals the pricing engine's default rider cost.
+const legacyFlatRiderPayout = 30.00
+
+// riderPayoutFor returns the rider's payout for a completed delivery: the
+// order's pricing-snapshot rider cost when a snapshot exists, else the legacy
+// flat amount. Grocery orders and databases without the snapshot table (older
+// environments) use the legacy amount.
+func (r *DeliveryRepository) riderPayoutFor(ctx context.Context, tx *sql.Tx, order *models.DeliveryOrder) (float64, error) {
+	if order.IsGrocery() {
+		return legacyFlatRiderPayout, nil
+	}
+	var hasTable bool
+	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('order_pricing_snapshots') IS NOT NULL`).Scan(&hasTable); err != nil {
+		return 0, err
+	}
+	if !hasTable {
+		return legacyFlatRiderPayout, nil
+	}
+	var cents sql.NullInt64
+	err := tx.QueryRowContext(ctx, `SELECT rider_cost_cents FROM order_pricing_snapshots WHERE order_id=$1`, order.OrderID).Scan(&cents)
+	if errors.Is(err, sql.ErrNoRows) || (err == nil && !cents.Valid) {
+		return legacyFlatRiderPayout, nil
+	}
+	if err != nil {
+		return 0, err
+	}
+	return float64(cents.Int64) / 100, nil
 }
 
 // isCODPaymentMode mirrors the check already used at the order-status-update
