@@ -17,6 +17,7 @@ import (
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/database"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/push"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/router"
@@ -155,6 +156,9 @@ func main() {
 	} else {
 		log.Println("[WARN] REDISPATCH_INTERVAL_SECONDS=0. Orders that find no rider at dispatch will not be offered again.")
 	}
+
+	// Reject logged-out / deleted-account tokens (tables written by user-service).
+	middleware.SetTokenRevocationChecker(repository.NewTokenRevocationRepo(db))
 
 	engine := router.Setup(db, cfg, hub, deliverySvc, restaurantCli)
 

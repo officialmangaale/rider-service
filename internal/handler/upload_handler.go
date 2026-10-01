@@ -3,10 +3,9 @@ package handler
 import (
 	"context"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
-	"path/filepath"
-	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
@@ -16,6 +15,16 @@ import (
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
 )
+
+const maxUploadBytes = 10 << 20
+
+// allowedUploadTypes maps sniffed content types to the stored extension.
+var allowedUploadTypes = map[string]string{
+	"image/jpeg":      ".jpg",
+	"image/png":       ".png",
+	"image/webp":      ".webp",
+	"application/pdf": ".pdf",
+}
 
 type UploadHandler struct {
 	s3Client *s3.Client
@@ -55,6 +64,11 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 		return
 	}
 
+	if file.Size <= 0 || file.Size > maxUploadBytes {
+		dto.ValidationError(c, "File must be between 1 byte and 10 MB")
+		return
+	}
+
 	src, err := file.Open()
 	if err != nil {
 		dto.InternalError(c, "Failed to open file")
@@ -62,17 +76,28 @@ func (h *UploadHandler) HandleUpload(c *gin.Context) {
 	}
 	defer src.Close()
 
-	ext := filepath.Ext(file.Filename)
-	if ext == "" {
-		ext = ".bin"
+	// Decide type and extension from the file's own bytes, never from the
+	// client-supplied name/header, so HTML/SVG/executables cannot be hosted.
+	head := make([]byte, 512)
+	n, _ := io.ReadFull(src, head)
+	contentType := http.DetectContentType(head[:n])
+	ext, allowed := allowedUploadTypes[contentType]
+	if !allowed {
+		dto.ValidationError(c, "Only JPEG, PNG, WebP or PDF files are allowed")
+		return
 	}
-	
-	newFileName := fmt.Sprintf("riders/%s%s", uuid.New().String(), strings.ToLower(ext))
+	if _, err := src.Seek(0, io.SeekStart); err != nil {
+		dto.InternalError(c, "Failed to read file")
+		return
+	}
+
+	newFileName := fmt.Sprintf("riders/%s%s", uuid.New().String(), ext)
 
 	_, err = h.s3Client.PutObject(c.Request.Context(), &s3.PutObjectInput{
-		Bucket: aws.String(h.bucket),
-		Key:    aws.String(newFileName),
-		Body:   src,
+		Bucket:      aws.String(h.bucket),
+		Key:         aws.String(newFileName),
+		Body:        src,
+		ContentType: aws.String(contentType),
 	})
 
 	if err != nil {

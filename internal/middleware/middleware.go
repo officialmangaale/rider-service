@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"os"
 	"net/http"
 	"strings"
 
@@ -64,6 +65,14 @@ func AuthMiddleware(jwtSecret string) gin.HandlerFunc {
 		// Extract "phone" if present
 		phone, _ := claims["phone"].(string)
 
+		// A signed, unexpired token can still have been revoked (logout,
+		// account deletion). 401 so the app signs the rider out.
+		if TokenIsRevoked(c.Request.Context(), tokenStr, sub, claims) {
+			dto.Unauthorized(c, "Invalid or expired token")
+			c.Abort()
+			return
+		}
+
 		c.Set("user_id", sub)
 		c.Set("user_role", role)
 		c.Set("user_phone", phone)
@@ -103,10 +112,21 @@ func RequireAdmin() gin.HandlerFunc {
 	}
 }
 
-// CORSMiddleware adds permissive CORS headers.
+// CORSMiddleware sets CORS headers. When ALLOWED_ORIGINS (comma separated) is
+// configured, only those browser origins are allowed; when it is unset every
+// origin is allowed, as before, so a deployment without the setting keeps
+// working. Mobile apps send no Origin header and are unaffected either way.
 func CORSMiddleware() gin.HandlerFunc {
+	allowed := parseAllowedOrigins(os.Getenv("ALLOWED_ORIGINS"))
 	return func(c *gin.Context) {
-		c.Header("Access-Control-Allow-Origin", "*")
+		origin := c.GetHeader("Origin")
+		switch {
+		case len(allowed) == 0:
+			c.Header("Access-Control-Allow-Origin", "*")
+		case origin != "" && allowed[origin]:
+			c.Header("Access-Control-Allow-Origin", origin)
+			c.Header("Vary", "Origin")
+		}
 		c.Header("Access-Control-Allow-Methods", "GET, POST, PUT, PATCH, DELETE, OPTIONS")
 		c.Header("Access-Control-Allow-Headers", "Origin, Content-Type, Authorization")
 
@@ -117,4 +137,14 @@ func CORSMiddleware() gin.HandlerFunc {
 
 		c.Next()
 	}
+}
+
+func parseAllowedOrigins(raw string) map[string]bool {
+	out := map[string]bool{}
+	for _, o := range strings.Split(raw, ",") {
+		if o = strings.TrimSpace(o); o != "" {
+			out[o] = true
+		}
+	}
+	return out
 }
