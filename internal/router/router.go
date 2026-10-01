@@ -55,12 +55,10 @@ func Setup(
 	notifH := handler.NewNotificationHandler(notifSvc)
 	deliveryH := handler.NewDeliveryHandler(deliverySvc)
 	adminRiderH := handler.NewAdminRiderHandler(db)
+	supportH := handler.NewSupportHandler(db)
 
 	// ==================== PUBLIC ROUTES ====================
 	r.GET("/health", healthH.Health)
-
-	apiV1Public := r.Group("/api/v1")
-	apiV1Public.POST("/upload", uploadH.HandleUpload)
 
 	// ==================== WEBSOCKET ROUTES ====================
 	// Rider WebSocket uses token from query or auth header
@@ -71,6 +69,9 @@ func Setup(
 	// ==================== PROTECTED ROUTES ====================
 	auth := r.Group("/api/v1")
 	auth.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+
+	// Document/photo upload: authenticated riders only (was public).
+	auth.POST("/upload", uploadH.HandleUpload)
 
 	// --- Rider Profile & Onboarding ---
 	rider := auth.Group("/rider")
@@ -163,6 +164,20 @@ func Setup(
 	{
 		adminRiderReports.GET("/wallet-transactions/export-csv", adminRiderH.ExportWalletTransactionsCSV)
 		adminRiderReports.GET("/settlements/export-csv", adminRiderH.ExportSettlementsCSV)
+	}
+
+	// --- Rider support: tickets, contact details, and the admin queue ---
+	support := auth.Group("/support")
+	{
+		support.POST("/tickets", supportH.CreateTicket)
+		support.GET("/tickets", supportH.ListMyTickets)
+		support.GET("/contact", supportH.Contact)
+	}
+	adminSupport := auth.Group("/admin/support-tickets")
+	adminSupport.Use(middleware.RequireAdmin())
+	{
+		adminSupport.GET("", supportH.AdminListTickets)
+		adminSupport.PATCH("/:id", supportH.AdminUpdateTicket)
 	}
 
 	// --- Notifications ---
