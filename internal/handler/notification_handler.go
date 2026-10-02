@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
@@ -29,11 +30,34 @@ func (h *NotificationHandler) RegisterDeviceToken(c *gin.Context) {
 		return
 	}
 
-	if err := h.notifSvc.RegisterDeviceToken(c.Request.Context(), userID, req.Platform, req.PushToken); err != nil {
+	if err := h.notifSvc.RegisterDeviceToken(c.Request.Context(), userID, req.Platform, req.Token()); err != nil {
+		if errors.Is(err, service.ErrInvalidDeviceToken) {
+			dto.ValidationError(c, "platform must be android or ios and push_token must be a device token")
+			return
+		}
 		dto.InternalError(c, "Failed to register device token")
 		return
 	}
 	dto.Success(c, http.StatusOK, "device token registered", nil)
+}
+
+// UnregisterDeviceToken forgets a push token, called when the rider signs out.
+func (h *NotificationHandler) UnregisterDeviceToken(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	var req dto.DeviceTokenRemoveRequest
+	if err := c.ShouldBindJSON(&req); err != nil {
+		dto.ValidationError(c, "push_token is required")
+		return
+	}
+	if err := h.notifSvc.UnregisterDeviceToken(c.Request.Context(), userID, req.Token()); err != nil {
+		if errors.Is(err, service.ErrInvalidDeviceToken) {
+			dto.ValidationError(c, "push_token is required")
+			return
+		}
+		dto.InternalError(c, "Failed to remove device token")
+		return
+	}
+	dto.Success(c, http.StatusOK, "device token removed", nil)
 }
 
 // ListNotifications returns paginated notifications.

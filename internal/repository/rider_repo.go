@@ -153,7 +153,7 @@ func (r *RiderRepository) SetRealtimeAvailability(ctx context.Context, userID st
 		VALUES ($1, $2, $3, NOW())
 		ON CONFLICT (rider_id) DO UPDATE SET
 			is_online = $2,
-			is_available = $3,
+			is_available = ($3 AND rider_availability.current_order_id IS NULL),
 			updated_at = NOW()`
 	_, err := r.db.ExecContext(ctx, query, userID, isOnline, isAvailable)
 	return err

@@ -117,6 +117,11 @@ func (w *RedispatchWorker) Sweep(parent context.Context) SweepResult {
 	defer cancel()
 
 	var result SweepResult
+	if reconciler, ok := w.dispatcher.(interface{ ReconcileFoodDispatches(context.Context) error }); ok {
+		if err := reconciler.ReconcileFoodDispatches(ctx); err != nil {
+			log.Printf("[REDISPATCH-WORKER] Missing dispatch reconciliation failed: %v", err)
+		}
+	}
 	candidates, err := w.finder.FindRedispatchCandidates(ctx, w.cfg.MaxAge, w.cfg.Cooldown, w.cfg.BatchSize)
 	if err != nil {
 		log.Printf("[REDISPATCH-WORKER] Candidate query failed: %v", err)

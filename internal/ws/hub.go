@@ -17,6 +17,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
 )
 
 // Hub manages all WebSocket connections for riders and customer tracking.
@@ -137,6 +138,14 @@ func (h *Hub) HandleRiderWS(jwtSecret string) gin.HandlerFunc {
 				"reason_code": dispatchtrace.ReasonMissingSubject,
 			})
 			c.JSON(http.StatusUnauthorized, gin.H{"error": "missing sub"})
+			return
+		}
+		if middleware.TokenIsRevoked(c.Request.Context(), tokenStr, riderID, claims) {
+			dispatchtrace.Emit(dispatchtrace.EventConnectionRejected, dispatchtrace.Fields{
+				"reason_code": dispatchtrace.ReasonTokenInvalid,
+				"rider_id":    riderID,
+			})
+			c.JSON(http.StatusUnauthorized, gin.H{"error": "invalid token"})
 			return
 		}
 

@@ -103,3 +103,8 @@ pnpm-lock.yaml
 /fooddelivery.sql
 *.dump
 *.backup
+
+# Local/production secrets - never commit
+.env
+.env.*
+!.env.example

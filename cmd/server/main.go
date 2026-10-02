@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -16,12 +17,36 @@ import (
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/database"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/push"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/router"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/service"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/worker"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
 )
+
+// newOfferPusher builds the FCM-backed offer notifier, or returns nil when push
+// is not configured or its credentials are unusable. Push is additive, so a bad
+// key is reported loudly here and never stops the service from dispatching.
+func newOfferPusher(cfg *config.Config, tokens *repository.NotificationRepository) service.OfferPusher {
+	if strings.TrimSpace(cfg.FCMServiceAccount) == "" {
+		log.Println("[WARN] FCM_SERVICE_ACCOUNT_JSON not set: delivery offers will NOT be pushed to riders' phones. A rider with the app closed or backgrounded only sees an offer if the app's online service is running.")
+		return nil
+	}
+	account, err := push.ParseServiceAccount(cfg.FCMServiceAccount)
+	if err != nil {
+		log.Printf("[ERROR] FCM push disabled: %v", err)
+		return nil
+	}
+	client, err := push.NewFCMClient(push.Config{Account: *account, ProjectID: cfg.FCMProjectID})
+	if err != nil {
+		log.Printf("[ERROR] FCM push disabled: %v", err)
+		return nil
+	}
+	log.Printf("[INFO] FCM push for delivery offers enabled project=%s", client.ProjectID())
+	return push.NewNotifier(client, tokens)
+}
 
 func main() {
 	// Load .env if present (dev mode)
@@ -46,6 +71,19 @@ func main() {
 
 	deliveryRepo := repository.NewDeliveryRepository(db)
 	riderRepo := repository.NewRiderRepository(db)
+
+	// A database that predates migrations 078/095/096/097 makes every food
+	// dispatch fail with nothing but "Searching for a rider" on the restaurant
+	// screen. Say so once, loudly, at boot. Log-only: it never stops the service.
+	schemaCtx, cancelSchema := context.WithTimeout(context.Background(), 5*time.Second)
+	if gaps, err := deliveryRepo.DispatchSchemaGaps(schemaCtx); err != nil {
+		log.Printf("[WARN] Dispatch schema check failed: %v", err)
+	} else if len(gaps) > 0 {
+		log.Printf("[ERROR] ONLINE FOOD DISPATCH CANNOT RUN: database is missing [%s]. Apply restaurant-service/migrations 078, 095, 096, 097 in that order, then enable dispatch for a restaurant allowlist (docs/online-delivery-flow.md). Until then no food offer can be created, listed or accepted.", strings.Join(gaps, "; "))
+	} else {
+		log.Println("[INFO] Dispatch schema ready (078, 095, 096, 097)")
+	}
+	cancelSchema()
 
 	dispatchCache, err := dispatchcache.NewRedisDispatchCache(cfg.RedisURL)
 	if err != nil {
@@ -78,6 +116,10 @@ func main() {
 	// RIDER_REFERRAL_ENABLED unset, delivery completion behaves exactly as it
 	// did before the referral programme existed.
 	deliverySvc.SetRiderReferralEnabled(cfg.RiderReferralEnabled)
+	// Device push for delivery offers. Off without an FCM service account.
+	if pusher := newOfferPusher(cfg, repository.NewNotificationRepository(db)); pusher != nil {
+		deliverySvc.SetOfferPusher(pusher)
+	}
 	// Opt-in per-target dispatch trace; off unless DISPATCH_TRACE_UNTIL is a
 	// future time. See docs/rider-offer-investigation/OBSERVABILITY_PLAN.md.
 	deliverySvc.SetTrace(dispatchtrace.LoadTraceFromEnv())
@@ -114,6 +156,9 @@ func main() {
 	} else {
 		log.Println("[WARN] REDISPATCH_INTERVAL_SECONDS=0. Orders that find no rider at dispatch will not be offered again.")
 	}
+
+	// Reject logged-out / deleted-account tokens (tables written by user-service).
+	middleware.SetTokenRevocationChecker(repository.NewTokenRevocationRepo(db))
 
 	engine := router.Setup(db, cfg, hub, deliverySvc, restaurantCli)
 

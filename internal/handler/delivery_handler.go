@@ -4,6 +4,7 @@ import (
 	"errors"
 	"net/http"
 	"strconv"
+	"strings"
 
 	"github.com/gin-gonic/gin"
 
@@ -20,6 +21,26 @@ type DeliveryHandler struct {
 
 func NewDeliveryHandler(deliverySvc *service.DeliveryService) *DeliveryHandler {
 	return &DeliveryHandler{deliverySvc: deliverySvc}
+}
+
+func (h *DeliveryHandler) WithdrawDelivery(c *gin.Context) {
+	orderID, err := strconv.Atoi(c.Param("orderId"))
+	if err != nil {
+		dto.ValidationError(c, "Invalid order ID")
+		return
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if c.ShouldBindJSON(&body) != nil || body.Reason == "" {
+		dto.ValidationError(c, "reason is required")
+		return
+	}
+	if err := h.deliverySvc.WithdrawDelivery(c.Request.Context(), orderID, middleware.GetUserID(c), body.Reason); err != nil {
+		dto.Conflict(c, err.Error())
+		return
+	}
+	dto.Success(c, http.StatusOK, "Delivery withdrawn; searching for another rider", nil)
 }
 
 // UpdateLocation handles POST /riders/location
@@ -82,7 +103,16 @@ func (h *DeliveryHandler) AcceptRequest(c *gin.Context) {
 	}
 	order, err := h.deliverySvc.AcceptRequest(c.Request.Context(), requestID, riderID)
 	if err != nil {
-		dto.Conflict(c, err.Error())
+		code, message := "OFFER_UNAVAILABLE", err.Error()
+		switch {
+		case strings.Contains(message, "already assigned"):
+			code, message = "ORDER_ALREADY_ASSIGNED", "This order has already been assigned."
+		case strings.Contains(message, "expired"):
+			code, message = "OFFER_EXPIRED", "This offer has expired."
+		case strings.Contains(message, "offline") || strings.Contains(message, "unavailable"):
+			code = "RIDER_UNAVAILABLE"
+		}
+		dto.ErrorWithCode(c, http.StatusConflict, message, code, nil)
 		return
 	}
 	dto.Success(c, http.StatusOK, "Request accepted, rider assigned", gin.H{

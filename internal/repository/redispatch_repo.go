@@ -50,7 +50,7 @@ const redispatchCandidateSQL = `
 		  AND COALESCE(d.restaurant_owned, FALSE) = FALSE
 		  AND d.created_at >= NOW() - make_interval(secs => $1)
 		  AND o.is_deleted = FALSE
-		  AND LOWER(o.order_status) IN ('accepted', 'confirmed', 'preparing', 'ready')
+		  AND d.order_type = 'food' AND ` + offerableFoodPredicate + `
 		  AND COALESCE(o.assigned_rider_user_id, '') = ''
 		  AND NOT EXISTS (
 		        SELECT 1 FROM delivery_order_requests r

@@ -10,7 +10,6 @@ import (
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
-	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/testpg"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/ws"
 )
 
@@ -76,14 +75,15 @@ func requestFor(t *testing.T, db *sql.DB, orderID int, riderID string) (int, str
 }
 
 func TestConfirmedOrderReachesTheRiderAndIsAssignedExclusively(t *testing.T) {
-	db := testpg.Open(t)
+	db := dispatchDB(t)
 	lines := captureDispatch(t)
-	e2eSeedRider(t, db, "rider-near", 0.5)
-	e2eSeedRider(t, db, "rider-farther", 1.2)
+	seedDispatchRider(t, db, rNear, 0.5)
+	seedDispatchRider(t, db, rFarther, 1.2)
 	svc := e2eService(db)
 	ctx := context.Background()
 
 	// 1. The confirmed order's event is processed.
+	seedPreparingOrder(t, db, 13294)
 	if err := svc.ProcessOrderPlacedEvent(ctx, confirmedOrderEvent(13294)); err != nil {
 		t.Fatalf("ProcessOrderPlacedEvent: %v", err)
 	}
@@ -96,8 +96,8 @@ func TestConfirmedOrderReachesTheRiderAndIsAssignedExclusively(t *testing.T) {
 	if status != models.DeliveryStatusRiderSearching {
 		t.Fatalf("delivery_status = %q, want rider_searching (not no_rider_found)", status)
 	}
-	nearID, nearStatus := requestFor(t, db, 13294, "rider-near")
-	farID, _ := requestFor(t, db, 13294, "rider-farther")
+	nearID, nearStatus := requestFor(t, db, 13294, rNear)
+	farID, _ := requestFor(t, db, 13294, rFarther)
 	if nearStatus != models.RequestStatusPending {
 		t.Fatalf("offer status %q", nearStatus)
 	}
@@ -118,7 +118,7 @@ func TestConfirmedOrderReachesTheRiderAndIsAssignedExclusively(t *testing.T) {
 	}
 
 	// 4. The rider app's pending-requests poll returns the offer.
-	payloads, err := svc.GetPendingRequestPayloads(ctx, "rider-near")
+	payloads, err := svc.GetPendingRequestPayloads(ctx, rNear)
 	if err != nil || len(payloads) != 1 || payloads[0]["request_id"] != nearID || payloads[0]["order_id"] != 13294 {
 		t.Fatalf("pending requests for rider-near: %+v, %v", payloads, err)
 	}
@@ -129,11 +129,11 @@ func TestConfirmedOrderReachesTheRiderAndIsAssignedExclusively(t *testing.T) {
 	}
 
 	// 5. The nearer rider accepts.
-	order, err := svc.AcceptRequest(ctx, nearID, "rider-near")
+	order, err := svc.AcceptRequest(ctx, nearID, rNear)
 	if err != nil {
 		t.Fatalf("AcceptRequest: %v", err)
 	}
-	if order.AssignedRiderID == nil || *order.AssignedRiderID != "rider-near" {
+	if order.AssignedRiderID == nil || *order.AssignedRiderID != rNear {
 		t.Fatalf("assigned to %v", order.AssignedRiderID)
 	}
 
@@ -142,20 +142,20 @@ func TestConfirmedOrderReachesTheRiderAndIsAssignedExclusively(t *testing.T) {
 	if err := db.QueryRow(`SELECT delivery_status, assigned_rider_id FROM delivery_orders WHERE order_id = 13294`).Scan(&status, &assigned); err != nil {
 		t.Fatalf("reload: %v", err)
 	}
-	if status != models.DeliveryStatusRiderAssigned || assigned.String != "rider-near" {
+	if status != models.DeliveryStatusRiderAssigned || assigned.String != rNear {
 		t.Fatalf("delivery order %s / %v", status, assigned)
 	}
-	if _, farStatus := requestFor(t, db, 13294, "rider-farther"); farStatus != models.RequestStatusCancelled {
+	if _, farStatus := requestFor(t, db, 13294, rFarther); farStatus != models.RequestStatusCancelled {
 		t.Fatalf("the other rider's offer is %q, want cancelled", farStatus)
 	}
-	if others, _ := svc.GetPendingRequestPayloads(ctx, "rider-farther"); len(others) != 0 {
+	if others, _ := svc.GetPendingRequestPayloads(ctx, rFarther); len(others) != 0 {
 		t.Fatalf("the other rider still sees %d offers", len(others))
 	}
-	if _, err := svc.AcceptRequest(ctx, farID, "rider-farther"); err == nil {
+	if _, err := svc.AcceptRequest(ctx, farID, rFarther); err == nil {
 		t.Fatal("a second rider must not be able to accept")
 	}
 	var busyOrder sql.NullInt64
-	if err := db.QueryRow(`SELECT current_order_id FROM rider_availability WHERE rider_id = 'rider-near'`).Scan(&busyOrder); err != nil || busyOrder.Int64 != 13294 {
+	if err := db.QueryRow(`SELECT current_order_id FROM rider_availability WHERE rider_id = $1`, rNear).Scan(&busyOrder); err != nil || busyOrder.Int64 != 13294 {
 		t.Fatalf("accepting rider must be busy with the order: %v %v", busyOrder, err)
 	}
 	if !strings.Contains(strings.Join(*lines, "\n"), "event=dispatch.offer.accepted") {
@@ -165,17 +165,18 @@ func TestConfirmedOrderReachesTheRiderAndIsAssignedExclusively(t *testing.T) {
 
 // Two riders accept the same order at the same instant. Exactly one wins.
 func TestSimultaneousAcceptsAssignExactlyOneRider(t *testing.T) {
-	db := testpg.Open(t)
+	db := dispatchDB(t)
 	captureDispatch(t)
-	e2eSeedRider(t, db, "rider-a", 0.4)
-	e2eSeedRider(t, db, "rider-b", 0.6)
+	seedDispatchRider(t, db, rA, 0.4)
+	seedDispatchRider(t, db, rB, 0.6)
 	svc := e2eService(db)
 	ctx := context.Background()
+	seedPreparingOrder(t, db, 13400)
 	if err := svc.ProcessOrderPlacedEvent(ctx, confirmedOrderEvent(13400)); err != nil {
 		t.Fatalf("ProcessOrderPlacedEvent: %v", err)
 	}
-	reqA, _ := requestFor(t, db, 13400, "rider-a")
-	reqB, _ := requestFor(t, db, 13400, "rider-b")
+	reqA, _ := requestFor(t, db, 13400, rA)
+	reqB, _ := requestFor(t, db, 13400, rB)
 
 	var wg sync.WaitGroup
 	results := make([]error, 2)
@@ -183,7 +184,7 @@ func TestSimultaneousAcceptsAssignExactlyOneRider(t *testing.T) {
 	for i, accept := range []struct {
 		req   int
 		rider string
-	}{{reqA, "rider-a"}, {reqB, "rider-b"}} {
+	}{{reqA, rA}, {reqB, rB}} {
 		wg.Add(1)
 		go func(i, req int, rider string) {
 			defer wg.Done()
@@ -223,11 +224,12 @@ func TestSimultaneousAcceptsAssignExactlyOneRider(t *testing.T) {
 // With no rider nearby the order is still recorded as no_rider_found, and the
 // log says why (not "query failed").
 func TestNoRiderNearbyIsRecordedAndExplained(t *testing.T) {
-	db := testpg.Open(t)
+	db := dispatchDB(t)
 	lines := captureDispatch(t)
-	e2eSeedRider(t, db, "rider-far-away", 40)
+	seedDispatchRider(t, db, rFarAway, 40)
 	svc := e2eService(db)
 
+	seedPreparingOrder(t, db, 13500)
 	if err := svc.ProcessOrderPlacedEvent(context.Background(), confirmedOrderEvent(13500)); err != nil {
 		t.Fatalf("ProcessOrderPlacedEvent: %v", err)
 	}

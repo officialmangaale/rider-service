@@ -185,6 +185,14 @@ type EarningsSummary struct {
 	IncentiveEarnings float64 `json:"incentive_earnings"`
 	BonusEarnings     float64 `json:"bonus_earnings"`
 	PenaltyAmount     float64 `json:"penalty_amount"`
+
+	// Wallet fields (platform upgrade Module 11 ledger). WalletBalance is the
+	// rider's current net-payable balance; PendingPayout is the positive
+	// portion of it (what the platform currently owes, not yet settled);
+	// SettledPayout is the lifetime total already paid out via settlements.
+	WalletBalance float64 `json:"wallet_balance"`
+	PendingPayout float64 `json:"pending_payout"`
+	SettledPayout float64 `json:"settled_payout"`
 }
 
 // DashboardData for the rider home screen.

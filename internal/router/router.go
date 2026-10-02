@@ -38,6 +38,7 @@ func Setup(
 	// -- Services --
 	riderSvc := service.NewRiderService(riderRepo, orderRepo, earningsRepo)
 	orderSvc := service.NewOrderService(orderRepo, deliveryRepo, assignmentRepo, riderRepo, earningsRepo, statusHistoryRepo, restaurantCli)
+	orderSvc.SetDeliveryService(deliverySvc)
 	locationSvc := service.NewLocationService(riderRepo, locationHistoryRepo)
 	// The app's location route feeds the Redis dispatch index too.
 	locationSvc.SetLocationIndexer(deliverySvc)
@@ -50,25 +51,27 @@ func Setup(
 	riderH := handler.NewRiderHandler(riderSvc)
 	orderH := handler.NewOrderHandler(orderSvc)
 	locationH := handler.NewLocationHandler(locationSvc)
-	earningsH := handler.NewEarningsHandler(earningsSvc)
+	earningsH := handler.NewEarningsHandler(earningsSvc, db)
 	notifH := handler.NewNotificationHandler(notifSvc)
 	deliveryH := handler.NewDeliveryHandler(deliverySvc)
+	adminRiderH := handler.NewAdminRiderHandler(db)
+	supportH := handler.NewSupportHandler(db)
 
 	// ==================== PUBLIC ROUTES ====================
 	r.GET("/health", healthH.Health)
-
-	apiV1Public := r.Group("/api/v1")
-	apiV1Public.POST("/upload", uploadH.HandleUpload)
 
 	// ==================== WEBSOCKET ROUTES ====================
 	// Rider WebSocket uses token from query or auth header
 	r.GET("/ws/rider", hub.HandleRiderWS(cfg.JWTSecret))
 	// Tracking WebSocket for customer app
-	r.GET("/ws/tracking/orders/:orderId", hub.HandleOrderTrackingWS())
+	r.GET("/ws/tracking/orders/:orderId", middleware.TrackingToken(), middleware.AuthMiddleware(cfg.JWTSecret), middleware.TrackingAccess(db), hub.HandleOrderTrackingWS())
 
 	// ==================== PROTECTED ROUTES ====================
 	auth := r.Group("/api/v1")
 	auth.Use(middleware.AuthMiddleware(cfg.JWTSecret))
+
+	// Document/photo upload: authenticated riders only (was public).
+	auth.POST("/upload", uploadH.HandleUpload)
 
 	// --- Rider Profile & Onboarding ---
 	rider := auth.Group("/rider")
@@ -127,22 +130,61 @@ func Setup(
 		newDelivery.GET("/orders", deliveryH.GetRiderOrders)
 		newDelivery.GET("/orders/:orderId", deliveryH.GetRiderOrderDetail)
 		newDelivery.POST("/orders/:orderId/status", deliveryH.UpdateDeliveryStatus)
+		newDelivery.POST("/orders/:orderId/withdraw", deliveryH.WithdrawDelivery)
 	}
 
 	// --- NEW Delivery Tracking (For Customer App, internal or authenticated) ---
-	r.GET("/api/v1/delivery/orders/:orderId/tracking", deliveryH.GetDeliveryTracking)
+	r.GET("/api/v1/delivery/orders/:orderId/tracking", middleware.AuthMiddleware(cfg.JWTSecret), middleware.TrackingAccess(db), deliveryH.GetDeliveryTracking)
 
 	// --- Earnings ---
 	earnings := auth.Group("/earnings")
 	{
 		earnings.GET("/summary", earningsH.GetSummary)
 		earnings.GET("/history", earningsH.GetHistory)
+		// Self-service wallet ledger (platform upgrade Module 21) — same
+		// data Module 10's admin view reads, scoped to the caller's own ID.
+		earnings.GET("/wallet/transactions", earningsH.GetWalletTransactions)
+		earnings.GET("/wallet/settlements", earningsH.GetSettlements)
+	}
+
+	// --- Admin: Rider Management (platform upgrade Module 10/11) ---
+	adminRiders := auth.Group("/admin/riders")
+	adminRiders.Use(middleware.RequireAdmin())
+	{
+		adminRiders.GET("", adminRiderH.ListRiders)
+		adminRiders.GET("/:riderId/wallet/transactions", adminRiderH.GetWalletTransactions)
+		adminRiders.GET("/:riderId/settlements", adminRiderH.GetSettlements)
+		adminRiders.POST("/:riderId/settlements", adminRiderH.CreateSettlement)
+		adminRiders.POST("/:riderId/wallet/adjustments", adminRiderH.CreateWalletAdjustment)
+	}
+
+	// --- Admin: Reports and Exports (platform upgrade Module 24) ---
+	adminRiderReports := auth.Group("/admin/reports/riders")
+	adminRiderReports.Use(middleware.RequireAdmin())
+	{
+		adminRiderReports.GET("/wallet-transactions/export-csv", adminRiderH.ExportWalletTransactionsCSV)
+		adminRiderReports.GET("/settlements/export-csv", adminRiderH.ExportSettlementsCSV)
+	}
+
+	// --- Rider support: tickets, contact details, and the admin queue ---
+	support := auth.Group("/support")
+	{
+		support.POST("/tickets", supportH.CreateTicket)
+		support.GET("/tickets", supportH.ListMyTickets)
+		support.GET("/contact", supportH.Contact)
+	}
+	adminSupport := auth.Group("/admin/support-tickets")
+	adminSupport.Use(middleware.RequireAdmin())
+	{
+		adminSupport.GET("", supportH.AdminListTickets)
+		adminSupport.PATCH("/:id", supportH.AdminUpdateTicket)
 	}
 
 	// --- Notifications ---
 	notifications := auth.Group("/notifications")
 	{
 		notifications.POST("/device-token", notifH.RegisterDeviceToken)
+		notifications.DELETE("/device-token", notifH.UnregisterDeviceToken)
 		notifications.GET("", notifH.ListNotifications)
 		notifications.PUT("/:id/read", notifH.MarkRead)
 		notifications.PUT("/read-all", notifH.MarkAllRead)

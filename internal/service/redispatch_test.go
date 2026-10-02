@@ -64,6 +64,8 @@ func expectRedispatchable(mock sqlmock.Sqlmock) {
 	mock.ExpectQuery(regexp.QuoteMeta("FROM delivery_orders WHERE delivery_order_id=$1")).
 		WithArgs(16).
 		WillReturnRows(deliveryOrderRow(models.DeliveryStatusNoRiderFound, nil, false))
+	mock.ExpectQuery("SELECT EXISTS.*FROM orders o").WithArgs(13286).
+		WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(true))
 	mock.ExpectQuery(regexp.QuoteMeta("status='accepted'")).
 		WithArgs(16).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
@@ -186,6 +188,8 @@ func TestRedispatchStopsWhileAnOfferIsPending(t *testing.T) {
 	mock.ExpectQuery(regexp.QuoteMeta("FROM delivery_orders WHERE delivery_order_id=$1")).
 		WithArgs(16).
 		WillReturnRows(deliveryOrderRow(models.DeliveryStatusRiderSearching, nil, false))
+	mock.ExpectQuery("SELECT EXISTS.*FROM orders o").WithArgs(13286).
+		WillReturnRows(sqlmock.NewRows([]string{"allowed"}).AddRow(true))
 	mock.ExpectQuery(regexp.QuoteMeta("status='accepted'")).
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT COUNT(*) FROM delivery_order_requests")).

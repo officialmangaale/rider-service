@@ -1,23 +1,26 @@
 package handler
 
 import (
+	"database/sql"
 	"net/http"
 
 	"github.com/gin-gonic/gin"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/service"
 )
 
 // EarningsHandler handles earnings endpoints.
 type EarningsHandler struct {
 	earningsSvc *service.EarningsService
+	db          *sql.DB
 }
 
 // NewEarningsHandler creates a new EarningsHandler.
-func NewEarningsHandler(earningsSvc *service.EarningsService) *EarningsHandler {
-	return &EarningsHandler{earningsSvc: earningsSvc}
+func NewEarningsHandler(earningsSvc *service.EarningsService, db *sql.DB) *EarningsHandler {
+	return &EarningsHandler{earningsSvc: earningsSvc, db: db}
 }
 
 // GetSummary returns aggregated earnings.
@@ -34,9 +37,9 @@ func (h *EarningsHandler) GetSummary(c *gin.Context) {
 		WeeklyEarnings:    summary.WeekEarnings,
 		MonthlyEarnings:   summary.MonthEarnings,
 		TotalEarnings:     summary.TotalEarnings,
-		WalletBalance:     0.0,
-		PendingPayout:     0.0,
-		SettledPayout:     0.0,
+		WalletBalance:     summary.WalletBalance,
+		PendingPayout:     summary.PendingPayout,
+		SettledPayout:     summary.SettledPayout,
 		CompletedOrders:   summary.TotalOrders,
 		DeliveryEarnings:  summary.DeliveryEarnings,
 		TipEarnings:       summary.TipEarnings,
@@ -61,4 +64,38 @@ func (h *EarningsHandler) GetHistory(c *gin.Context) {
 		return
 	}
 	dto.Paginated(c, earnings, pq.Page, pq.Limit, total)
+}
+
+// GetWalletTransactions returns the authenticated rider's own wallet ledger
+// (platform upgrade Module 21) — the same net-payable ledger Module 10's
+// admin view reads, scoped to the caller's own rider ID instead of an
+// admin-supplied one.
+func (h *EarningsHandler) GetWalletTransactions(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	var pq dto.PaginationQuery
+	_ = c.ShouldBindQuery(&pq)
+	pq.Normalize()
+
+	txns, total, err := repository.ListWalletTransactions(c.Request.Context(), h.db, userID, pq.Limit, pq.Offset())
+	if err != nil {
+		dto.InternalError(c, "Failed to fetch wallet transactions")
+		return
+	}
+	dto.Paginated(c, txns, pq.Page, pq.Limit, total)
+}
+
+// GetSettlements returns the authenticated rider's own settlement history
+// (platform upgrade Module 21).
+func (h *EarningsHandler) GetSettlements(c *gin.Context) {
+	userID := middleware.GetUserID(c)
+	var pq dto.PaginationQuery
+	_ = c.ShouldBindQuery(&pq)
+	pq.Normalize()
+
+	settlements, total, err := repository.ListSettlements(c.Request.Context(), h.db, userID, pq.Limit, pq.Offset())
+	if err != nil {
+		dto.InternalError(c, "Failed to fetch settlements")
+		return
+	}
+	dto.Paginated(c, settlements, pq.Page, pq.Limit, total)
 }
