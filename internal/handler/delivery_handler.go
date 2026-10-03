@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"strconv"
@@ -9,6 +10,7 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dto"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/maps"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/models"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/service"
@@ -17,10 +19,24 @@ import (
 // DeliveryHandler handles the new delivery assignment and tracking APIs.
 type DeliveryHandler struct {
 	deliverySvc *service.DeliveryService
+	locationSvc *service.LocationService
+	routeSvc    deliveryRouteService
 }
 
-func NewDeliveryHandler(deliverySvc *service.DeliveryService) *DeliveryHandler {
-	return &DeliveryHandler{deliverySvc: deliverySvc}
+type deliveryRouteService interface {
+	GetDeliveryRoute(context.Context, string, int, string, maps.Coordinate) (*service.DeliveryRoute, error)
+}
+
+func NewDeliveryHandler(deliverySvc *service.DeliveryService, locationSvc ...*service.LocationService) *DeliveryHandler {
+	h := &DeliveryHandler{deliverySvc: deliverySvc}
+	if len(locationSvc) > 0 {
+		h.locationSvc = locationSvc[0]
+	}
+	return h
+}
+
+func (h *DeliveryHandler) SetRouteService(routeSvc *service.DeliveryRouteService) {
+	h.routeSvc = routeSvc
 }
 
 func (h *DeliveryHandler) WithdrawDelivery(c *gin.Context) {
@@ -52,6 +68,21 @@ func (h *DeliveryHandler) UpdateLocation(c *gin.Context) {
 	}
 	if err := c.ShouldBindJSON(&req); err != nil {
 		dto.ValidationError(c, "latitude and longitude are required")
+		return
+	}
+	if h.locationSvc != nil {
+		if _, err := h.locationSvc.UpdateRiderLocation(c.Request.Context(), riderID, service.RiderLocationUpdate{
+			Latitude:  req.Latitude,
+			Longitude: req.Longitude,
+		}); err != nil {
+			if errors.Is(err, service.ErrInvalidRiderLocation) {
+				dto.ValidationError(c, "invalid rider location coordinates")
+				return
+			}
+			dto.InternalError(c, "Failed to update location")
+			return
+		}
+		dto.Success(c, http.StatusOK, "Location updated", nil)
 		return
 	}
 	if err := h.deliverySvc.UpdateRiderLocation(c.Request.Context(), riderID, req.Latitude, req.Longitude); err != nil {
@@ -200,6 +231,65 @@ func (h *DeliveryHandler) UpdateDeliveryStatus(c *gin.Context) {
 	})
 }
 
+// GetDeliveryRoute handles POST /riders/orders/{orderId}/route.
+func (h *DeliveryHandler) GetDeliveryRoute(c *gin.Context) {
+	if h.routeSvc == nil {
+		dto.ErrorWithCode(c, http.StatusServiceUnavailable, "Route unavailable", service.RouteErrProviderDisabled, nil)
+		return
+	}
+	riderID := middleware.GetUserID(c)
+	orderID, err := strconv.Atoi(c.Param("orderId"))
+	if err != nil {
+		dto.ValidationError(c, "Invalid order ID")
+		return
+	}
+	var req struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Origin    *struct {
+			Latitude  float64 `json:"latitude"`
+			Longitude float64 `json:"longitude"`
+		} `json:"origin"`
+		OrderType string `json:"order_type"`
+	}
+	if err := c.ShouldBindJSON(&req); err != nil {
+		dto.ValidationError(c, "origin is required")
+		return
+	}
+	origin := maps.Coordinate{Latitude: req.Latitude, Longitude: req.Longitude}
+	if req.Origin != nil {
+		origin = maps.Coordinate{Latitude: req.Origin.Latitude, Longitude: req.Origin.Longitude}
+	}
+	route, err := h.routeSvc.GetDeliveryRoute(c.Request.Context(), riderID, orderID, req.OrderType, origin)
+	if err != nil {
+		writeDeliveryRouteError(c, err)
+		return
+	}
+	dto.Success(c, http.StatusOK, "delivery route", gin.H{"route": route})
+}
+
+func writeDeliveryRouteError(c *gin.Context, err error) {
+	var routeErr *service.DeliveryRouteError
+	if !errors.As(err, &routeErr) {
+		dto.ErrorWithCode(c, http.StatusServiceUnavailable, "Route unavailable", service.RouteErrUpstream, nil)
+		return
+	}
+	status := http.StatusServiceUnavailable
+	message := "Route unavailable"
+	switch routeErr.Code {
+	case service.RouteErrInvalidCoordinates:
+		status = http.StatusBadRequest
+		message = "Invalid route coordinates"
+	case service.RouteErrOrderNotFound, service.RouteErrNoRoute:
+		status = http.StatusNotFound
+		message = "Route not found"
+	case service.RouteErrRateLimited:
+		status = http.StatusTooManyRequests
+		message = "Route refresh too soon"
+	}
+	dto.ErrorWithCode(c, status, message, routeErr.Code, nil)
+}
+
 // GetDeliveryTracking handles GET /delivery/orders/{orderId}/tracking
 func (h *DeliveryHandler) GetDeliveryTracking(c *gin.Context) {
 	orderID, err := strconv.Atoi(c.Param("orderId"))
@@ -213,6 +303,25 @@ func (h *DeliveryHandler) GetDeliveryTracking(c *gin.Context) {
 		return
 	}
 	dto.Success(c, http.StatusOK, "delivery tracking", tracking)
+}
+
+// GetInternalCustomerTracking handles GET /internal/tracking/orders/{orderId}.
+func (h *DeliveryHandler) GetInternalCustomerTracking(c *gin.Context) {
+	orderID, err := strconv.Atoi(c.Param("orderId"))
+	if err != nil || orderID <= 0 {
+		dto.ValidationError(c, "Invalid order ID")
+		return
+	}
+	if h.deliverySvc == nil {
+		dto.InternalError(c, "Tracking unavailable")
+		return
+	}
+	snapshot, err := h.deliverySvc.GetCustomerTrackingSnapshot(c.Request.Context(), orderID, c.Query("order_type"), h.routeSvc)
+	if err != nil {
+		dto.NotFound(c, "delivery tracking not found")
+		return
+	}
+	dto.Success(c, http.StatusOK, "customer tracking", snapshot)
 }
 
 // GetRiderOrders returns restaurant-owned (or platform) orders for the active rider.

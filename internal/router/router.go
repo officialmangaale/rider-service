@@ -8,6 +8,7 @@ import (
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/client"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/handler"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/maps"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/service"
@@ -21,6 +22,7 @@ func Setup(
 	hub *ws.Hub,
 	deliverySvc *service.DeliveryService,
 	restaurantCli *client.RestaurantClient,
+	routeProviders ...maps.RouteProvider,
 ) *gin.Engine {
 	r := gin.Default()
 	r.Use(middleware.CORSMiddleware())
@@ -42,8 +44,16 @@ func Setup(
 	locationSvc := service.NewLocationService(riderRepo, locationHistoryRepo)
 	// The app's location route feeds the Redis dispatch index too.
 	locationSvc.SetLocationIndexer(deliverySvc)
+	locationSvc.SetLocationNotifier(deliverySvc)
 	earningsSvc := service.NewEarningsService(earningsRepo)
 	notifSvc := service.NewNotificationService(notifRepo)
+	var deliveryRouteSvc *service.DeliveryRouteService
+	if len(routeProviders) > 0 && routeProviders[0] != nil {
+		deliveryRouteSvc = service.NewDeliveryRouteService(orderSvc, routeProviders[0], service.DeliveryRouteOptions{
+			TrafficAware: cfg.GoogleMaps.RoutesTrafficEnabled,
+			ResultTTL:    cfg.GoogleMaps.RouteCacheTTL,
+		})
+	}
 
 	// -- Handlers --
 	healthH := handler.NewHealthHandler(db)
@@ -53,7 +63,8 @@ func Setup(
 	locationH := handler.NewLocationHandler(locationSvc)
 	earningsH := handler.NewEarningsHandler(earningsSvc, db)
 	notifH := handler.NewNotificationHandler(notifSvc)
-	deliveryH := handler.NewDeliveryHandler(deliverySvc)
+	deliveryH := handler.NewDeliveryHandler(deliverySvc, locationSvc)
+	deliveryH.SetRouteService(deliveryRouteSvc)
 	adminRiderH := handler.NewAdminRiderHandler(db)
 	supportH := handler.NewSupportHandler(db)
 
@@ -65,6 +76,12 @@ func Setup(
 	r.GET("/ws/rider", hub.HandleRiderWS(cfg.JWTSecret))
 	// Tracking WebSocket for customer app
 	r.GET("/ws/tracking/orders/:orderId", middleware.TrackingToken(), middleware.AuthMiddleware(cfg.JWTSecret), middleware.TrackingAccess(db), hub.HandleOrderTrackingWS())
+
+	internal := r.Group("/internal")
+	internal.Use(middleware.RequireInternalServiceToken(cfg.InternalServiceToken))
+	{
+		internal.GET("/tracking/orders/:orderId", deliveryH.GetInternalCustomerTracking)
+	}
 
 	// ==================== PROTECTED ROUTES ====================
 	auth := r.Group("/api/v1")
@@ -129,6 +146,7 @@ func Setup(
 		newDelivery.POST("/order-requests/:requestId/reject", deliveryH.RejectRequest)
 		newDelivery.GET("/orders", deliveryH.GetRiderOrders)
 		newDelivery.GET("/orders/:orderId", deliveryH.GetRiderOrderDetail)
+		newDelivery.POST("/orders/:orderId/route", deliveryH.GetDeliveryRoute)
 		newDelivery.POST("/orders/:orderId/status", deliveryH.UpdateDeliveryStatus)
 		newDelivery.POST("/orders/:orderId/withdraw", deliveryH.WithdrawDelivery)
 	}

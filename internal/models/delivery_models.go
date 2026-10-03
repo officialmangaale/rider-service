@@ -220,6 +220,38 @@ type DeliveryTrackingResponse struct {
 	Timeline       []DeliveryTimelineItem `json:"timeline"`
 }
 
+type CustomerTrackingSnapshot struct {
+	OrderID        int                    `json:"order_id"`
+	OrderType      string                 `json:"order_type"`
+	DeliveryStatus string                 `json:"delivery_status"`
+	Phase          string                 `json:"phase"`
+	Rider          *CustomerTrackingRider `json:"rider,omitempty"`
+	Route          *CustomerTrackingRoute `json:"route,omitempty"`
+	Timeline       []DeliveryTimelineItem `json:"timeline,omitempty"`
+}
+
+type CustomerTrackingRider struct {
+	Latitude          float64 `json:"latitude"`
+	Longitude         float64 `json:"longitude"`
+	LocationUpdatedAt string  `json:"location_updated_at"`
+	Stale             bool    `json:"stale"`
+}
+
+type CustomerTrackingRoute struct {
+	DestinationType       string   `json:"destination_type"`
+	EncodedPolyline       string   `json:"encoded_polyline"`
+	DistanceMeters        int64    `json:"distance_meters"`
+	DurationSeconds       float64  `json:"duration_seconds"`
+	StaticDurationSeconds float64  `json:"static_duration_seconds,omitempty"`
+	TrafficDelaySeconds   *float64 `json:"traffic_delay_seconds,omitempty"`
+	ETASeconds            float64  `json:"eta_seconds"`
+	ETAMinutes            int      `json:"eta_minutes"`
+	GeneratedAt           string   `json:"generated_at"`
+	ExpiresAt             string   `json:"expires_at"`
+	Stale                 bool     `json:"stale"`
+	FallbackReason        string   `json:"fallback_reason,omitempty"`
+}
+
 // TrackingRiderInfo for customer tracking.
 type TrackingRiderInfo struct {
 	ID        string  `json:"id"`

@@ -38,6 +38,15 @@ type DeliveryStatusPayload struct {
 	Notes            string `json:"notes,omitempty"`
 }
 
+// RiderLocationPayload is a lightweight internal event for customer tracking.
+// It intentionally carries only display-safe movement fields.
+type RiderLocationPayload struct {
+	OrderID           int     `json:"order_id"`
+	Latitude          float64 `json:"latitude"`
+	Longitude         float64 `json:"longitude"`
+	LocationUpdatedAt string  `json:"location_updated_at"`
+}
+
 // NewRestaurantClient creates a new RestaurantClient.
 //
 // Trailing slashes are trimmed from baseURL. Production configured
@@ -185,6 +194,44 @@ func (c *RestaurantClient) NotifyDeliveryStatusUpdateAsync(orderID int, payload 
 			if attempt < maxRetries {
 				time.Sleep(time.Duration(attempt*2) * time.Second)
 			}
+		}
+	}()
+}
+
+// NotifyRiderLocationUpdated posts a lightweight location delta to
+// restaurant-service's customer tracking facade.
+func (c *RestaurantClient) NotifyRiderLocationUpdated(orderID int, payload RiderLocationPayload) error {
+	if c.baseURL == "" {
+		return fmt.Errorf("restaurant-service base URL is not configured")
+	}
+	url := fmt.Sprintf("%s/internal/tracking/orders/%d/rider-location", c.baseURL, orderID)
+	body, err := json.Marshal(payload)
+	if err != nil {
+		return fmt.Errorf("failed to marshal rider location payload: %w", err)
+	}
+	req, err := http.NewRequest(http.MethodPost, url, bytes.NewReader(body))
+	if err != nil {
+		return fmt.Errorf("failed to create request: %w", err)
+	}
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-Internal-Service-Token", c.token)
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("location callback to restaurant-service failed: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 200 && resp.StatusCode < 300 {
+		return nil
+	}
+	return callbackError(resp, orderID)
+}
+
+// NotifyRiderLocationUpdatedAsync sends the location callback without blocking
+// the rider's GPS upload path.
+func (c *RestaurantClient) NotifyRiderLocationUpdatedAsync(orderID int, payload RiderLocationPayload) {
+	go func() {
+		if err := c.NotifyRiderLocationUpdated(orderID, payload); err != nil {
+			log.Printf("[RESTAURANT-CLIENT] Rider location callback failed for order %d: %v", orderID, err)
 		}
 	}()
 }

@@ -9,6 +9,7 @@ import (
 
 // Config holds all service configuration from environment variables.
 type Config struct {
+	GoogleMaps     GoogleMaps
 	Port           string
 	DatabaseURL    string
 	RedisURL       string
@@ -20,8 +21,9 @@ type Config struct {
 	AWSRegion         string
 
 	// Internal service communication
-	RestaurantServiceBaseURL string
-	InternalServiceToken     string
+	RestaurantServiceBaseURL    string
+	InternalServiceToken        string
+	CustomerLiveTrackingEnabled bool
 
 	// RiderReferralEnabled gates the rider-referral qualification callback to
 	// restaurant-service. Defaults to false: with it off, delivery completion
@@ -52,6 +54,7 @@ type Config struct {
 // Load reads configuration from environment variables.
 func Load() (*Config, error) {
 	cfg := &Config{
+		GoogleMaps:     loadGoogleMaps(),
 		Port:           getEnv("PORT", "8084"),
 		DatabaseURL:    os.Getenv("DATABASE_URL"),
 		RedisURL:       os.Getenv("REDIS_URL"),
@@ -63,8 +66,9 @@ func Load() (*Config, error) {
 		AWSRegion:         getEnv("AWS_REGION", "ap-south-1"),
 
 		// Internal
-		RestaurantServiceBaseURL: os.Getenv("RESTAURANT_SERVICE_INTERNAL_BASE_URL"),
-		InternalServiceToken:     os.Getenv("INTERNAL_SERVICE_TOKEN"),
+		RestaurantServiceBaseURL:    os.Getenv("RESTAURANT_SERVICE_INTERNAL_BASE_URL"),
+		InternalServiceToken:        os.Getenv("INTERNAL_SERVICE_TOKEN"),
+		CustomerLiveTrackingEnabled: getEnvBool("CUSTOMER_LIVE_TRACKING_ENABLED", false),
 
 		// Referral programme — off by default.
 		RiderReferralEnabled: getEnvBool("RIDER_REFERRAL_ENABLED", false),

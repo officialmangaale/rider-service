@@ -48,6 +48,11 @@ type DeliveryService struct {
 	// offerPusher wakes a rider's phone for an offer. Nil (no FCM credentials)
 	// leaves delivery exactly as it was: socket plus the app's polling.
 	offerPusher OfferPusher
+
+	// customerLiveTrackingEnabled gates the Phase 6 customer location bridge.
+	// Off by default, so rider GPS upload behavior and callback volume remain
+	// unchanged until rollout explicitly enables it.
+	customerLiveTrackingEnabled bool
 }
 
 // OfferPusher delivers offer events to a rider's devices. push.Notifier is the
@@ -74,6 +79,10 @@ func (s *DeliveryService) SetOfferPusher(pusher OfferPusher) {
 // keeps compiling unchanged and the default stays off.
 func (s *DeliveryService) SetRiderReferralEnabled(enabled bool) {
 	s.riderReferralEnabled = enabled
+}
+
+func (s *DeliveryService) SetCustomerLiveTrackingEnabled(enabled bool) {
+	s.customerLiveTrackingEnabled = enabled
 }
 
 // SetTrace enables the per-target dispatch trace. Tracing is observation
@@ -837,20 +846,49 @@ func (s *DeliveryService) UpdateRiderLocation(ctx context.Context, riderID strin
 	}
 	s.IndexRiderLocation(ctx, riderID, lat, lng)
 
-	// Check if rider has active order → broadcast to customer
-	avail, err := s.deliveryRepo.GetRiderAvailability(ctx, riderID)
-	if err == nil && avail.CurrentOrderID != nil {
-		orderIDStr := strconv.Itoa(*avail.CurrentOrderID)
-		s.hub.SendToOrder(orderIDStr, ws.WSMessage{
-			Type: "RIDER_LOCATION_UPDATED",
-			Data: map[string]interface{}{
-				"rider_id":  riderID,
-				"latitude":  lat,
-				"longitude": lng,
-			},
+	s.NotifyRiderLocationUpdated(ctx, riderID, RiderLocationUpdate{Latitude: lat, Longitude: lng})
+	return nil
+}
+
+// NotifyRiderLocationUpdated publishes a stored rider location to the active
+// order tracking channel. It intentionally resolves the active delivery by
+// delivery_orders status rather than broadcasting from availability alone, so
+// completed/cancelled deliveries do not keep leaking rider coordinates.
+func (s *DeliveryService) NotifyRiderLocationUpdated(ctx context.Context, riderID string, update RiderLocationUpdate) {
+	if s == nil || s.deliveryRepo == nil || s.hub == nil {
+		return
+	}
+	orderID, err := s.deliveryRepo.GetActiveOrderIDForRider(ctx, riderID)
+	if err == sql.ErrNoRows {
+		return
+	}
+	if err != nil {
+		dispatchtrace.Emit(dispatchtrace.EventLocationIndexFailed, dispatchtrace.Fields{
+			"rider_id": riderID,
+			"error":    dispatchtrace.ErrorText(err),
+		})
+		return
+	}
+	s.hub.SendToOrder(strconv.Itoa(orderID), ws.WSMessage{
+		Type: "RIDER_LOCATION_UPDATED",
+		Data: map[string]interface{}{
+			"rider_id":  riderID,
+			"latitude":  update.Latitude,
+			"longitude": update.Longitude,
+		},
+	})
+	if s.customerLiveTrackingEnabled && s.restaurantCli != nil {
+		updatedAt := update.ReceivedAt
+		if updatedAt.IsZero() {
+			updatedAt = time.Now().UTC()
+		}
+		s.restaurantCli.NotifyRiderLocationUpdatedAsync(orderID, client.RiderLocationPayload{
+			OrderID:           orderID,
+			Latitude:          update.Latitude,
+			Longitude:         update.Longitude,
+			LocationUpdatedAt: updatedAt.UTC().Format(time.RFC3339Nano),
 		})
 	}
-	return nil
 }
 
 // UpdateRiderAvailability handles POST /riders/availability

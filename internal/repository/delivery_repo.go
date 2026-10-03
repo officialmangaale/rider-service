@@ -272,6 +272,22 @@ func (r *DeliveryRepository) GetActiveOrderForRider(ctx context.Context, riderUs
 	return &o, nil
 }
 
+func (r *DeliveryRepository) GetActiveOrderIDForRider(ctx context.Context, riderUserID string) (int, error) {
+	var orderID int
+	err := r.db.QueryRowContext(ctx,
+		`SELECT order_id
+		 FROM delivery_orders
+		 WHERE (rider_user_id=$1 OR assigned_rider_id=$1)
+		 AND delivery_status IN ('rider_assigned', 'rider_arrived_restaurant', 'picked_up', 'on_the_way')
+		 ORDER BY COALESCE(assigned_at, updated_at, created_at) DESC
+		 LIMIT 1`, riderUserID,
+	).Scan(&orderID)
+	if err != nil {
+		return 0, err
+	}
+	return orderID, nil
+}
+
 // OrderRiderSnapshot is what the customer-facing `orders` row (owned by
 // restaurant-service) currently says about an order's lifecycle and rider.
 type OrderRiderSnapshot struct {

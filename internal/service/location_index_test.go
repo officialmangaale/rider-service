@@ -20,6 +20,12 @@ func (r *recordingIndexer) IndexRiderLocation(_ context.Context, riderID string,
 	r.calls = append(r.calls, riderID)
 }
 
+type recordingLocationNotifier struct{ calls []string }
+
+func (r *recordingLocationNotifier) NotifyRiderLocationUpdated(_ context.Context, riderID string, _ RiderLocationUpdate) {
+	r.calls = append(r.calls, riderID)
+}
+
 func TestAppLocationUploadIsIndexedAfterPostgres(t *testing.T) {
 	svc, mock := newLocationService(t)
 	indexer := &recordingIndexer{}
@@ -35,6 +41,34 @@ func TestAppLocationUploadIsIndexedAfterPostgres(t *testing.T) {
 	}
 	if len(indexer.calls) != 1 || indexer.calls[0] != "rider-1" {
 		t.Fatalf("indexer calls %v", indexer.calls)
+	}
+}
+
+func TestAppLocationUploadNotifiesAfterPostgres(t *testing.T) {
+	svc, mock := newLocationService(t)
+	notifier := &recordingLocationNotifier{}
+	svc.SetLocationNotifier(notifier)
+	expectUsersLocationUpdate(mock)
+	mock.ExpectExec(regexp.QuoteMeta("INSERT INTO rider_locations")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectExec(regexp.QuoteMeta("rider_location_history")).
+		WillReturnResult(sqlmock.NewResult(0, 1))
+
+	if _, err := svc.UpdateLocation(context.Background(), "rider-1", 28.45, 77.02, nil, nil); err != nil {
+		t.Fatalf("UpdateLocation: %v", err)
+	}
+	if len(notifier.calls) != 1 || notifier.calls[0] != "rider-1" {
+		t.Fatalf("notifier calls %v", notifier.calls)
+	}
+}
+
+func TestInvalidLocationIsRejectedBeforePersistence(t *testing.T) {
+	svc, mock := newLocationService(t)
+	if _, err := svc.UpdateLocation(context.Background(), "rider-1", 0, 0, nil, nil); !errors.Is(err, ErrInvalidRiderLocation) {
+		t.Fatalf("UpdateLocation error = %v, want ErrInvalidRiderLocation", err)
+	}
+	if err := mock.ExpectationsWereMet(); err != nil {
+		t.Fatal(err)
 	}
 }
 

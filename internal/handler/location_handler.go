@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"errors"
 	"log"
 	"net/http"
 	"strconv"
@@ -57,8 +58,23 @@ func (h *LocationHandler) UpdateLocation(c *gin.Context) {
 		return
 	}
 
-	resp, err := h.locationSvc.UpdateLocation(c.Request.Context(), userID, req.Latitude, req.Longitude, req.Heading, req.Speed)
+	resp, err := h.locationSvc.UpdateRiderLocation(c.Request.Context(), userID, service.RiderLocationUpdate{
+		Latitude:       req.Latitude,
+		Longitude:      req.Longitude,
+		Heading:        req.Heading,
+		Speed:          req.Speed,
+		AccuracyMeters: req.AccuracyMeters,
+		RecordedAt:     req.RecordedAt,
+		Source:         req.Source,
+		AppState:       req.AppState,
+		Sequence:       req.Sequence,
+	})
 	if err != nil {
+		if errors.Is(err, service.ErrInvalidRiderLocation) {
+			log.Printf("[LOCATION] Rejected invalid rider location rider_id=%s source=%s", userID, describeLocationSource(req.Source))
+			dto.ValidationError(c, "invalid rider location coordinates")
+			return
+		}
 		log.Printf("[LOCATION] Update failed rider_id=%s source=%s err=%v", userID, describeLocationSource(req.Source), err)
 		dto.InternalError(c, "Failed to update location")
 		return

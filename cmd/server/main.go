@@ -17,6 +17,7 @@ import (
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/config"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/database"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/dispatchtrace"
+	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/maps"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/middleware"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/push"
 	"github.com/Gursevak56/food-delivery-platform/services/rider-service/internal/repository"
@@ -55,6 +56,10 @@ func main() {
 	cfg, err := config.Load()
 	if err != nil {
 		log.Fatalf("[FATAL] Config load failed: %v", err)
+	}
+	// Optional provider diagnostics only: no client calls or business-flow wiring.
+	if cfg.GoogleMaps.RoutesEnabled {
+		log.Printf("[MAPS] provider=google operation=config capability=%s", cfg.GoogleMaps.RoutesCapability())
 	}
 
 	db, err := database.Connect(cfg.DatabaseURL)
@@ -116,6 +121,7 @@ func main() {
 	// RIDER_REFERRAL_ENABLED unset, delivery completion behaves exactly as it
 	// did before the referral programme existed.
 	deliverySvc.SetRiderReferralEnabled(cfg.RiderReferralEnabled)
+	deliverySvc.SetCustomerLiveTrackingEnabled(cfg.CustomerLiveTrackingEnabled)
 	// Device push for delivery offers. Off without an FCM service account.
 	if pusher := newOfferPusher(cfg, repository.NewNotificationRepository(db)); pusher != nil {
 		deliverySvc.SetOfferPusher(pusher)
@@ -160,7 +166,11 @@ func main() {
 	// Reject logged-out / deleted-account tokens (tables written by user-service).
 	middleware.SetTokenRevocationChecker(repository.NewTokenRevocationRepo(db))
 
-	engine := router.Setup(db, cfg, hub, deliverySvc, restaurantCli)
+	routeProvider, routeCacheCloser := newRouteProvider(cfg)
+	if routeCacheCloser != nil {
+		defer routeCacheCloser.Close()
+	}
+	engine := router.Setup(db, cfg, hub, deliverySvc, restaurantCli, routeProvider)
 
 	srv := &http.Server{
 		Addr:         ":" + cfg.Port,
@@ -199,4 +209,22 @@ func main() {
 		log.Fatalf("[FATAL] Shutdown failed: %v", err)
 	}
 	log.Println("[INFO] Rider service stopped")
+}
+
+func newRouteProvider(cfg *config.Config) (maps.RouteProvider, interface{ Close() error }) {
+	var routeCache maps.RouteCache
+	var routeCacheCloser interface{ Close() error }
+	if cfg.GoogleMaps.RouteCacheTTL > 0 {
+		cache, closer, err := maps.NewRedisRouteCache(cfg.RedisURL)
+		if err != nil {
+			log.Printf("[WARN] Redis route cache disabled: %v", err)
+		} else if cache != nil {
+			routeCache = cache
+			routeCacheCloser = closer
+			log.Printf("[INFO] Redis route cache configured ttl=%s", cfg.GoogleMaps.RouteCacheTTL)
+		} else if cfg.GoogleMaps.RoutesEnabled {
+			log.Println("[WARN] GOOGLE_ROUTES_CACHE_TTL_SECONDS is set but REDIS_URL is empty; route cache disabled")
+		}
+	}
+	return maps.NewGoogleRoutes(cfg.GoogleMaps, nil, routeCache, nil), routeCacheCloser
 }
