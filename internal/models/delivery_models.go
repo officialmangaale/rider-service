@@ -250,6 +250,17 @@ type CustomerTrackingRoute struct {
 	ExpiresAt             string   `json:"expires_at"`
 	Stale                 bool     `json:"stale"`
 	FallbackReason        string   `json:"fallback_reason,omitempty"`
+
+	// Additive. DistanceMeters/DurationSeconds above are the remaining distance
+	// and time along the route; these are the provider's own totals and the
+	// timestamps that let a client tell route age, ETA age and rider-fix age apart.
+	RouteDistanceMeters  int64   `json:"route_distance_meters,omitempty"`
+	RouteDurationSeconds float64 `json:"route_duration_seconds,omitempty"`
+	ETACalculatedAt      string  `json:"eta_calculated_at,omitempty"`
+	RiderLocationAt      string  `json:"rider_location_at,omitempty"`
+	ETABasis             string  `json:"eta_basis,omitempty"`
+	Reused               bool    `json:"reused,omitempty"`
+	OffRoute             bool    `json:"off_route,omitempty"`
 }
 
 // TrackingRiderInfo for customer tracking.

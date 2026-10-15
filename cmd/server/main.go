@@ -57,6 +57,12 @@ func main() {
 	if err != nil {
 		log.Fatalf("[FATAL] Config load failed: %v", err)
 	}
+	// Without these two settings every restaurant-service callback fails and a
+	// rider cannot mark an order picked up. Say so at boot, naming only the
+	// keys. The service still starts: offers and dispatch do not need them.
+	for _, issue := range cfg.InternalIntegrationIssues() {
+		log.Printf("[WARN] restaurant-service integration disabled: %s; riders will see \"Could not reach the restaurant system\" at pickup", issue)
+	}
 	// Optional provider diagnostics only: no client calls or business-flow wiring.
 	if cfg.GoogleMaps.RoutesEnabled {
 		log.Printf("[MAPS] provider=google operation=config capability=%s", cfg.GoogleMaps.RoutesCapability())

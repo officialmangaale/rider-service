@@ -50,8 +50,17 @@ func Setup(
 	var deliveryRouteSvc *service.DeliveryRouteService
 	if len(routeProviders) > 0 && routeProviders[0] != nil {
 		deliveryRouteSvc = service.NewDeliveryRouteService(orderSvc, routeProviders[0], service.DeliveryRouteOptions{
-			TrafficAware: cfg.GoogleMaps.RoutesTrafficEnabled,
-			ResultTTL:    cfg.GoogleMaps.RouteCacheTTL,
+			TrafficAware:      cfg.GoogleMaps.RoutesTrafficEnabled,
+			MaxRouteAge:       cfg.GoogleMaps.RouteMaxAge,
+			MinInterval:       cfg.GoogleMaps.RouteMinInterval,
+			OffRouteMeters:    float64(cfg.GoogleMaps.OffRouteMeters),
+			OffRouteSamples:   cfg.GoogleMaps.OffRouteSamples,
+			DeviationCooldown: cfg.GoogleMaps.DeviationCooldown,
+			FailureCooldown:   cfg.GoogleMaps.FailureCooldown,
+			MaxCallsPerOrder:  cfg.GoogleMaps.MaxCallsPerOrder,
+			MaxCallsPerMinute: cfg.GoogleMaps.MaxCallsPerMinute,
+			DailyBudget:       cfg.GoogleMaps.DailyBudget,
+			MaxConcurrent:     cfg.GoogleMaps.MaxConcurrentRequests,
 		})
 	}
 
@@ -81,6 +90,7 @@ func Setup(
 	internal.Use(middleware.RequireInternalServiceToken(cfg.InternalServiceToken))
 	{
 		internal.GET("/tracking/orders/:orderId", deliveryH.GetInternalCustomerTracking)
+		internal.GET("/maps/usage", deliveryH.GetMapsUsage)
 	}
 
 	// ==================== PROTECTED ROUTES ====================

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/gin-gonic/gin"
 
@@ -25,6 +26,7 @@ type DeliveryHandler struct {
 
 type deliveryRouteService interface {
 	GetDeliveryRoute(context.Context, string, int, string, maps.Coordinate) (*service.DeliveryRoute, error)
+	GetDeliveryRouteAt(context.Context, string, int, string, maps.Coordinate, time.Time) (*service.DeliveryRoute, error)
 }
 
 func NewDeliveryHandler(deliverySvc *service.DeliveryService, locationSvc ...*service.LocationService) *DeliveryHandler {
@@ -286,6 +288,9 @@ func writeDeliveryRouteError(c *gin.Context, err error) {
 	case service.RouteErrRateLimited:
 		status = http.StatusTooManyRequests
 		message = "Route refresh too soon"
+	case service.RouteErrBudgetExceeded:
+		status = http.StatusTooManyRequests
+		message = "Route budget reached"
 	}
 	dto.ErrorWithCode(c, status, message, routeErr.Code, nil)
 }
@@ -409,4 +414,11 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 		RestaurantOwned: o.RestaurantOwned,
 		AssignedAt:      o.AssignedAt,
 	}
+}
+
+// GetMapsUsage handles GET /internal/maps/usage. It returns counters only:
+// provider request counts by tier and refresh reason, cache outcomes, denied
+// refreshes and error codes. Nothing in it identifies a person, place or key.
+func (h *DeliveryHandler) GetMapsUsage(c *gin.Context) {
+	dto.Success(c, http.StatusOK, "maps usage", gin.H{"counters": maps.DefaultUsage.Snapshot()})
 }

@@ -15,7 +15,7 @@ import (
 const customerTrackingStaleAfter = 90 * time.Second
 
 type CustomerTrackingRouteService interface {
-	GetDeliveryRoute(context.Context, string, int, string, maps.Coordinate) (*DeliveryRoute, error)
+	GetDeliveryRouteAt(context.Context, string, int, string, maps.Coordinate, time.Time) (*DeliveryRoute, error)
 }
 
 func (s *DeliveryService) GetCustomerTrackingSnapshot(ctx context.Context, orderID int, orderType string, routeSvc CustomerTrackingRouteService) (*models.CustomerTrackingSnapshot, error) {
@@ -55,10 +55,10 @@ func (s *DeliveryService) GetCustomerTrackingSnapshot(ctx context.Context, order
 	if routeSvc == nil || stale {
 		return resp, nil
 	}
-	route, err := routeSvc.GetDeliveryRoute(ctx, riderID, do.OrderID, do.OrderType, maps.Coordinate{
+	route, err := routeSvc.GetDeliveryRouteAt(ctx, riderID, do.OrderID, do.OrderType, maps.Coordinate{
 		Latitude:  loc.Latitude,
 		Longitude: loc.Longitude,
-	})
+	}, loc.LastUpdatedAt.UTC())
 	if err != nil {
 		dispatchtrace.Emit("customer_tracking_route_error", dispatchtrace.Fields{
 			"order_id": orderID,
@@ -111,6 +111,9 @@ func customerTrackingRouteDTO(route *DeliveryRoute) *models.CustomerTrackingRout
 	if route == nil {
 		return nil
 	}
+	// DurationSeconds is the time remaining along the route from the rider's
+	// reported position, so the ETA counts down as the rider progresses without
+	// a new provider request.
 	etaMinutes := 0
 	if route.DurationSeconds > 0 {
 		etaMinutes = int(math.Ceil(route.DurationSeconds / 60))
@@ -129,5 +132,12 @@ func customerTrackingRouteDTO(route *DeliveryRoute) *models.CustomerTrackingRout
 		ExpiresAt:             route.ExpiresAt.UTC().Format(time.RFC3339Nano),
 		Stale:                 !route.ExpiresAt.IsZero() && now.After(route.ExpiresAt.UTC()),
 		FallbackReason:        route.FallbackReason,
+		RouteDistanceMeters:   route.RouteDistanceMeters,
+		RouteDurationSeconds:  route.RouteDurationSeconds,
+		ETACalculatedAt:       route.ETACalculatedAt.UTC().Format(time.RFC3339Nano),
+		RiderLocationAt:       route.RiderLocationAt.UTC().Format(time.RFC3339Nano),
+		ETABasis:              route.ETABasis,
+		Reused:                route.Reused,
+		OffRoute:              route.OffRoute,
 	}
 }

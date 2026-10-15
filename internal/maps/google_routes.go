@@ -20,7 +20,7 @@ import (
 const maxResponseBytes = 2 << 20
 
 type Observation struct {
-	Operation, CorrelationID, Cache string
+	Operation, CorrelationID, Cache, Tier string
 	Latency                         time.Duration
 	Attempts, StatusCode            int
 	ErrorCode                       ErrorCode
@@ -37,7 +37,7 @@ func logObservation(_ context.Context, o Observation) {
 		"provider": "google", "operation": o.Operation, "correlation_id": o.CorrelationID,
 		"success": o.ErrorCode == "", "error_code": string(o.ErrorCode),
 		"latency_ms": o.Latency.Milliseconds(), "status_code": o.StatusCode,
-		"timeout": o.ErrorCode == Timeout, "attempts": o.Attempts, "cache": o.Cache,
+		"timeout": o.ErrorCode == Timeout, "attempts": o.Attempts, "cache": o.Cache, "tier": o.Tier,
 	})
 }
 
@@ -82,6 +82,7 @@ func (g *GoogleRoutes) finish(ctx context.Context, started time.Time, o *Observa
 		}
 	}
 	g.observe(ctx, *o)
+	g.record(*o)
 }
 
 func (g *GoogleRoutes) GetRoute(ctx context.Context, r RouteRequest) (result RouteResult, err error) {
@@ -98,6 +99,7 @@ func (g *GoogleRoutes) GetRoute(ctx context.Context, r RouteRequest) (result Rou
 	if err != nil {
 		return
 	}
+	o.Tier = RoutesBillingTier(r.Options)
 	ctx, cancel := context.WithTimeout(ctx, g.cfg.RequestTimeout)
 	defer cancel()
 	if ctx.Err() != nil {
@@ -122,10 +124,7 @@ func (g *GoogleRoutes) GetRoute(ctx context.Context, r RouteRequest) (result Rou
 	if r.Options.RoutingPreference != "" {
 		body["routingPreference"] = r.Options.RoutingPreference
 	}
-	mask := "routes.distanceMeters,routes.duration,routes.staticDuration,routes.legs.distanceMeters,routes.legs.duration,routes.legs.staticDuration"
-	if r.Options.IncludePolyline {
-		mask += ",routes.polyline.encodedPolyline"
-	}
+	mask := routeFieldMask(r.Options)
 	data, err := g.post(ctx, "/directions/v2:computeRoutes", mask, body, &o)
 	if err != nil {
 		return result, err
@@ -142,9 +141,6 @@ func (g *GoogleRoutes) GetRoute(ctx context.Context, r RouteRequest) (result Rou
 	result, err = decodeRoute(payload.Routes[0], r.Options, time.Now().UTC())
 	if err != nil {
 		return result, err
-	}
-	if len(result.Legs) == 0 {
-		return RouteResult{}, &RouteError{Code: InvalidResponse}
 	}
 	if g.cache != nil && g.cfg.RouteCacheTTL > 0 {
 		cacheCtx, cacheCancel := context.WithTimeout(ctx, 50*time.Millisecond)
@@ -284,7 +280,12 @@ func decodeRoute(r googleRoute, options RouteOptions, at time.Time) (RouteResult
 		return n, err == nil && n >= 0 && !math.IsNaN(n) && !math.IsInf(n, 0)
 	}
 	duration, ok := parseDuration(r.Duration)
+	// staticDuration is only requested for traffic-aware routes. Without it the
+	// static duration is the duration itself.
 	static, staticOK := parseDuration(r.StaticDuration)
+	if r.StaticDuration == "" {
+		static, staticOK = duration, ok
+	}
 	if !ok || !staticOK || r.DistanceMeters < 0 || (options.IncludePolyline && r.Polyline.Encoded == "") {
 		return RouteResult{}, &RouteError{Code: InvalidResponse}
 	}
@@ -389,3 +390,42 @@ func (g *GoogleRoutes) post(ctx context.Context, path, mask string, body any, o 
 }
 
 var _ RouteProvider = (*GoogleRoutes)(nil)
+
+// routeFieldMask requests only what the delivery flow consumes: distance,
+// duration and (when asked for) the encoded polyline. staticDuration is added
+// only for traffic-aware routes, where it is the baseline the traffic delay is
+// measured against; without traffic it equals duration. Leg-level fields have
+// no consumer and are never requested.
+func routeFieldMask(options RouteOptions) string {
+	mask := "routes.distanceMeters,routes.duration"
+	if strings.HasPrefix(options.RoutingPreference, "TRAFFIC_AWARE") {
+		mask += ",routes.staticDuration"
+	}
+	if options.IncludePolyline {
+		mask += ",routes.polyline.encodedPolyline"
+	}
+	return mask
+}
+
+// record updates the process-wide usage counters. Counters carry no request
+// content: only operation, outcome, tier and cache state.
+func (g *GoogleRoutes) record(o Observation) {
+	if o.Operation != "routes" {
+		return
+	}
+	usage := DefaultUsage
+	if o.Attempts > 0 {
+		usage.Add("routes.attempts", int64(o.Attempts))
+	}
+	switch o.Cache {
+	case "hit", "miss", "error":
+		usage.Inc("routes.cache." + o.Cache)
+	}
+	if o.ErrorCode != "" {
+		usage.Inc("routes.error." + strings.ToLower(string(o.ErrorCode)))
+		return
+	}
+	if o.Cache != "hit" && o.Tier != "" {
+		usage.Inc("routes.calls." + o.Tier)
+	}
+}

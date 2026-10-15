@@ -80,7 +80,7 @@ func TestRouteFailures(t *testing.T) {
 	}{
 		{"malformed", 200, `bad-json`, InvalidResponse}, {"negative", 200, strings.Replace(routeJSON, "1200", "-1", 1), InvalidResponse},
 		{"duration", 200, strings.Replace(routeJSON, "150.5s", "NaNs", 1), InvalidResponse},
-		{"no legs", 200, `{"routes":[{"distanceMeters":1,"duration":"1s","staticDuration":"1s"}]}`, InvalidResponse},
+		{"no duration", 200, `{"routes":[{"distanceMeters":1}]}`, InvalidResponse},
 		{"empty", 200, `{"routes":[]}`, NoRoute}, {"bad request", 400, `secret upstream message`, InvalidRequest},
 		{"unauthorized", 401, `secret`, NotConfigured}, {"forbidden", 403, `secret`, NotConfigured},
 		{"rate limit", 429, `secret`, RateLimited}, {"server", 500, `secret`, UpstreamError},
@@ -261,4 +261,64 @@ func TestDisabledAddressProviders(t *testing.T) {
 	requireCode(t, err, ProviderDisabled)
 	_, err = provider.ReverseGeocode(context.Background(), Coordinate{})
 	requireCode(t, err, ProviderDisabled)
+}
+
+// The default request must ask Google for exactly the three fields the delivery
+// flow uses. Anything wider (legs, staticDuration, wildcards) changes billing
+// payload and is a regression.
+func TestDefaultFieldMaskIsMinimalAndTrafficUnaware(t *testing.T) {
+	var mask, preference, mode string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mask = r.Header.Get("X-Goog-FieldMask")
+		var body struct {
+			TravelMode        string `json:"travelMode"`
+			RoutingPreference string `json:"routingPreference"`
+		}
+		_ = json.NewDecoder(r.Body).Decode(&body)
+		preference, mode = body.RoutingPreference, body.TravelMode
+		fmt.Fprint(w, `{"routes":[{"distanceMeters":1200,"duration":"150s","polyline":{"encodedPolyline":"test-polyline"}}]}`)
+	}))
+	defer server.Close()
+	req := testRequest()
+	req.Options = RouteOptions{IncludePolyline: true}
+	result, err := NewGoogleRoutes(testConfig(server.URL), nil, nil, quiet).GetRoute(context.Background(), req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "routes.distanceMeters,routes.duration,routes.polyline.encodedPolyline"; mask != want {
+		t.Fatalf("field mask got %q want %q", mask, want)
+	}
+	if mode != "DRIVE" || preference != "TRAFFIC_UNAWARE" {
+		t.Fatalf("got mode=%s preference=%s want DRIVE/TRAFFIC_UNAWARE", mode, preference)
+	}
+	if result.StaticDurationSeconds != result.DurationSeconds || result.TrafficDurationSeconds != nil {
+		t.Fatalf("static duration must equal duration without traffic: %+v", result)
+	}
+	if RoutesBillingTier(req.Options) != "essentials" {
+		t.Fatalf("default request must bill as Essentials")
+	}
+}
+
+func TestTrafficAwareMaskAddsOnlyStaticDurationAndIsPro(t *testing.T) {
+	opts, _ := RouteOptions{RoutingPreference: "TRAFFIC_AWARE", IncludePolyline: true}.normalized()
+	if got, want := routeFieldMask(opts), "routes.distanceMeters,routes.duration,routes.staticDuration,routes.polyline.encodedPolyline"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+	if RoutesBillingTier(opts) != "pro" {
+		t.Fatal("traffic-aware must be counted as Pro")
+	}
+	if RoutesBillingTier(RouteOptions{TravelMode: "TWO_WHEELER", RoutingPreference: "TRAFFIC_UNAWARE"}) != "pro" {
+		t.Fatal("TWO_WHEELER must be counted as Pro")
+	}
+}
+
+func TestPolylineRequestedButMissingIsInvalid(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprint(w, `{"routes":[{"distanceMeters":1,"duration":"1s"}]}`)
+	}))
+	defer server.Close()
+	req := testRequest()
+	req.Options = RouteOptions{IncludePolyline: true}
+	_, err := NewGoogleRoutes(testConfig(server.URL), nil, nil, quiet).GetRoute(context.Background(), req)
+	requireCode(t, err, InvalidResponse)
 }
