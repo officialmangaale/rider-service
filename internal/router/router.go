@@ -74,6 +74,11 @@ func Setup(
 	notifH := handler.NewNotificationHandler(notifSvc)
 	deliveryH := handler.NewDeliveryHandler(deliverySvc, locationSvc)
 	deliveryH.SetRouteService(deliveryRouteSvc)
+	var chatPusher service.ChatPusher
+	if p, ok := deliverySvc.Pusher().(service.ChatPusher); ok {
+		chatPusher = p
+	}
+	chatH := handler.NewChatHandler(service.NewChatService(repository.NewChatRepository(db), hub, chatPusher))
 	adminRiderH := handler.NewAdminRiderHandler(db)
 	supportH := handler.NewSupportHandler(db)
 
@@ -84,6 +89,9 @@ func Setup(
 	// Rider WebSocket uses token from query or auth header
 	r.GET("/ws/rider", hub.HandleRiderWS(cfg.JWTSecret))
 	// Tracking WebSocket for customer app
+	// Customer chat socket: participants only, on its own channel (tracking is
+	// readable by the restaurant owner; a chat is not).
+	r.GET("/ws/chat/orders/:orderId", middleware.TrackingToken(), middleware.AuthMiddleware(cfg.JWTSecret), chatH.RequireParticipant(), hub.HandleOrderChatWS())
 	r.GET("/ws/tracking/orders/:orderId", middleware.TrackingToken(), middleware.AuthMiddleware(cfg.JWTSecret), middleware.TrackingAccess(db), hub.HandleOrderTrackingWS())
 
 	internal := r.Group("/internal")
@@ -159,6 +167,16 @@ func Setup(
 		newDelivery.POST("/orders/:orderId/route", deliveryH.GetDeliveryRoute)
 		newDelivery.POST("/orders/:orderId/status", deliveryH.UpdateDeliveryStatus)
 		newDelivery.POST("/orders/:orderId/withdraw", deliveryH.WithdrawDelivery)
+	}
+
+	// --- Customer <-> rider chat. One route set for both parties; the service
+	// derives each caller's role from the order. ---
+	chat := r.Group("/api/v1/delivery/orders/:orderId/chat", middleware.AuthMiddleware(cfg.JWTSecret))
+	{
+		chat.GET("", chatH.Summary)
+		chat.GET("/messages", chatH.List)
+		chat.POST("/messages", chatH.Send)
+		chat.POST("/read", chatH.Read)
 	}
 
 	// --- NEW Delivery Tracking (For Customer App, internal or authenticated) ---

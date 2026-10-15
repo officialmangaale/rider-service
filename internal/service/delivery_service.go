@@ -69,6 +69,10 @@ type OfferPusher interface {
 // SetOfferPusher enables device push for offers. A setter rather than a
 // constructor argument so every existing caller keeps compiling unchanged and
 // the default stays off.
+// Pusher returns the configured push notifier, or nil. Chat reuses it so a
+// rider has one FCM sender and one device-token store.
+func (s *DeliveryService) Pusher() OfferPusher { return s.offerPusher }
+
 func (s *DeliveryService) SetOfferPusher(pusher OfferPusher) {
 	s.offerPusher = pusher
 }
