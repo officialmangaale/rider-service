@@ -483,6 +483,17 @@ func (r *DeliveryRepository) RecordStatusHistory(ctx context.Context, tx *sql.Tx
 	return err
 }
 
+func (r *DeliveryRepository) RecordDeliveryStatusHistory(ctx context.Context, tx *sql.Tx, orderType string, orderID int, fromStatus, toStatus, changedBy string) error {
+	if models.NormalizeSourceOrderType(orderType) != "grocery" {
+		return r.RecordStatusHistory(ctx, tx, orderID, fromStatus, toStatus, changedBy)
+	}
+	if tx == nil {
+		return fmt.Errorf("transaction required for grocery delivery history")
+	}
+	_, err := tx.ExecContext(ctx, `INSERT INTO delivery_status_history(order_id,from_status,to_status,changed_by,order_type) VALUES($1,$2,$3,$4,'grocery')`, orderID, fromStatus, toStatus, changedBy)
+	return err
+}
+
 // RecordEarning writes one line of a rider's earnings ledger.
 //
 // order_id used to carry a foreign key to orders(order_id). A grocery delivery

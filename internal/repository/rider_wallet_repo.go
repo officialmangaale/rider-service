@@ -23,6 +23,11 @@ import (
 // existing tx; standalone callers (e.g. settlement recording) open their own.
 func PostWalletTransaction(ctx context.Context, tx *sql.Tx, riderID, transactionType string, amount float64,
 	orderID *int, referenceNumber, paymentMode, notes, createdByAdminID *string) (*models.RiderWalletTransaction, error) {
+	return postWalletTransaction(ctx, tx, riderID, transactionType, amount, orderID, referenceNumber, paymentMode, notes, createdByAdminID, "food")
+}
+
+func postWalletTransaction(ctx context.Context, tx *sql.Tx, riderID, transactionType string, amount float64,
+	orderID *int, referenceNumber, paymentMode, notes, createdByAdminID *string, orderType string) (*models.RiderWalletTransaction, error) {
 	if tx == nil {
 		return nil, errors.New("transaction required")
 	}
@@ -51,16 +56,26 @@ func PostWalletTransaction(ctx context.Context, tx *sql.Tx, riderID, transaction
 
 	after := before + amount
 
+	if orderType != "food" && orderType != "grocery" {
+		return nil, errors.New("invalid wallet order type")
+	}
 	var txnID int64
 	var createdAt time.Time
-	err = tx.QueryRowContext(ctx, `
+	insertSQL := `
 		INSERT INTO rider_wallet_transactions (
 			rider_id, transaction_type, amount, balance_before, balance_after,
 			order_id, reference_number, payment_mode, notes, created_by_admin_id, created_at
 		) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, NOW())
 		RETURNING id, created_at
-	`, riderID, transactionType, amount, before, after, orderID, referenceNumber, paymentMode, notes, createdByAdminID,
-	).Scan(&txnID, &createdAt)
+	`
+	args := []any{riderID, transactionType, amount, before, after, orderID, referenceNumber, paymentMode, notes, createdByAdminID}
+	if orderType == "grocery" {
+		// Migration 012 is required before platform grocery dispatch is enabled.
+		insertSQL = `INSERT INTO rider_wallet_transactions
+		(rider_id,transaction_type,amount,balance_before,balance_after,order_id,reference_number,payment_mode,notes,created_by_admin_id,order_type,created_at)
+		VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,'grocery',NOW()) RETURNING id,created_at`
+	}
+	err = tx.QueryRowContext(ctx, insertSQL, args...).Scan(&txnID, &createdAt)
 	if err != nil {
 		return nil, fmt.Errorf("insert rider wallet transaction: %w", err)
 	}

@@ -77,6 +77,7 @@ type Order struct {
 
 // ActiveOrder is the rider-app response shape for the current delivery.
 type ActiveOrder struct {
+	OrderType         string     `json:"order_type"`
 	ID                string     `json:"id"`
 	OrderID           int        `json:"order_id"`
 	DeliveryOrderID   int        `json:"delivery_order_id,omitempty"`

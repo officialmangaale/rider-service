@@ -65,7 +65,8 @@ func (r *TokenRevocationRepo) IsRevoked(ctx context.Context, rawToken, userID st
 	var cutoff sql.NullTime
 	err := r.db.QueryRowContext(queryCtx, `
 		SELECT
-			EXISTS (SELECT 1 FROM auth_token_revocations WHERE token_hash = $1),
+			EXISTS (SELECT 1 FROM auth_token_revocations WHERE token_hash = $1)
+			 OR EXISTS (SELECT 1 FROM public.users WHERE id::text = $2 AND deleted_at IS NOT NULL),
 			(SELECT tokens_invalid_before FROM auth_user_token_cutoffs WHERE user_id = $2)
 	`, HashAccessToken(rawToken), strings.TrimSpace(userID)).Scan(&tokenRevoked, &cutoff)
 	if err != nil {

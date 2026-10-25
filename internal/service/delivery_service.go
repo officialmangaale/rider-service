@@ -427,6 +427,12 @@ func excludeDeclinedRiders(riders []models.NearbyRider, declined map[string]bool
 // request that is still pending, so running this twice for the same order
 // cannot double-offer a rider.
 func (s *DeliveryService) sendOffers(ctx context.Context, deliveryOrder *models.DeliveryOrder, riders []models.NearbyRider) int {
+	payout, err := s.deliveryRepo.QuotedRiderPayout(ctx, deliveryOrder)
+	if err != nil {
+		log.Printf("[DELIVERY] payout quote unavailable order_id=%d: %v", deliveryOrder.OrderID, err)
+		return 0
+	}
+	deliveryOrder.RiderPayout = &payout
 	expiresAt := time.Now().Add(s.requestExpiry)
 	offered := 0
 	for _, rider := range riders {
@@ -727,6 +733,7 @@ func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *m
 		"delivery_distance_km": approximateDeliveryDistance(order),
 		"distance_km":          distanceKm,
 		"amount":               order.Amount,
+		"rider_payout":         order.RiderPayout,
 		"payment_mode":         order.PaymentMode,
 		"expires_at":           expiresAt.Format(time.RFC3339),
 		"assignment_type":      order.AssignmentType,
@@ -985,6 +992,11 @@ func (s *DeliveryService) GetPendingRequestPayloads(ctx context.Context, riderID
 		if len(eligible) == 0 {
 			continue
 		}
+		payout, err := s.deliveryRepo.QuotedRiderPayout(ctx, order)
+		if err != nil {
+			return nil, err
+		}
+		order.RiderPayout = &payout
 		payloads = append(payloads, BuildDeliveryOrderRequestPayload(req, order, req.DistanceKm, req.ExpiresAt))
 	}
 	return payloads, nil
@@ -1274,7 +1286,10 @@ func (s *DeliveryService) UpdateDeliveryStatus(ctx context.Context, orderID int,
 
 	// The owner may end an order mid-delivery (complete, cancel, reject).
 	// Nothing the rider does can succeed then; release the rider instead.
-	snap := s.orderSnapshot(ctx, orderID)
+	var snap *repository.OrderRiderSnapshot
+	if !deliveryOrder.IsGrocery() {
+		snap = s.orderSnapshot(ctx, orderID)
+	}
 	if snap != nil && restaurantOrderClosed(snap.OrderStatus) {
 		s.releaseClosedDelivery(ctx, repository.ClosedDelivery{
 			DeliveryOrderID: deliveryOrder.DeliveryOrderID,

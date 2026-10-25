@@ -88,6 +88,8 @@ func TestRedispatchOffersTheOrderToARiderWhoIsNowEligible(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE delivery_orders SET delivery_status=$2")).
 		WithArgs(16, models.DeliveryStatusRiderSearching).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass($1) IS NOT NULL")).WithArgs("order_pricing_snapshots").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO delivery_order_requests")).
 		WithArgs(16, 13286, "rider-ramesh", 0.0, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"request_id", "delivery_order_id", "order_id", "rider_id", "status", "distance_km", "expires_at", "created_at", "updated_at"}).
@@ -140,6 +142,8 @@ func TestRedispatchSkipsARiderWhoDeclined(t *testing.T) {
 	mock.ExpectExec(regexp.QuoteMeta("UPDATE delivery_orders SET delivery_status=$2")).
 		WithArgs(16, models.DeliveryStatusRiderSearching).
 		WillReturnResult(sqlmock.NewResult(0, 1))
+	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass($1) IS NOT NULL")).WithArgs("order_pricing_snapshots").
+		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO delivery_order_requests")).
 		WithArgs(16, 13286, "rider-next", 1.5, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"request_id", "delivery_order_id", "order_id", "rider_id", "status", "distance_km", "expires_at", "created_at", "updated_at"}).

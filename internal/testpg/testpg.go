@@ -159,7 +159,7 @@ CREATE TABLE orders (
 );
 CREATE TABLE delivery_status_history (
 	id          uuid PRIMARY KEY DEFAULT gen_random_uuid(),
-	order_id    integer NOT NULL,
+	order_id    integer NOT NULL REFERENCES orders(order_id) ON DELETE CASCADE,
 	from_status varchar(30),
 	to_status   varchar(30) NOT NULL,
 	changed_by  uuid,

@@ -52,7 +52,7 @@ func (r *DeliveryRepository) AdvanceDelivery(ctx context.Context, order *models.
 	if err = r.UpdateDeliveryTimestamp(ctx, tx, order.DeliveryOrderID, next); err != nil {
 		return false, err
 	}
-	if err = r.RecordStatusHistory(ctx, tx, order.OrderID, current, next, riderID); err != nil {
+	if err = r.RecordDeliveryStatusHistory(ctx, tx, order.OrderType, order.OrderID, current, next, riderID); err != nil {
 		return false, err
 	}
 	if !order.IsGrocery() {
@@ -67,11 +67,11 @@ func (r *DeliveryRepository) AdvanceDelivery(ctx context.Context, order *models.
 		}
 		if !order.RestaurantOwned {
 			// Payout comes from the order's immutable pricing snapshot when one
-				// exists (single source of truth); otherwise the legacy flat payout.
-				payout, perr := r.riderPayoutFor(ctx, tx, order)
-				if perr != nil {
-					return false, perr
-				}
+			// exists (single source of truth); otherwise the legacy flat payout.
+			payout, perr := r.riderPayoutFor(ctx, tx, order)
+			if perr != nil {
+				return false, perr
+			}
 			if err = r.RecordEarning(ctx, tx, riderID, order.OrderID, "delivery_fee", payout, "Base delivery payout", order.OrderType); err != nil {
 				return false, err
 			}
@@ -84,14 +84,18 @@ func (r *DeliveryRepository) AdvanceDelivery(ctx context.Context, order *models.
 			// restaurant-owned rider's arrangement (earnings and any COD
 			// they collect) is with that restaurant, not the platform.
 			orderID := order.OrderID
-			if _, err = PostWalletTransaction(ctx, tx, riderID, models.WalletTxnDeliveryEarning, payout,
-				&orderID, nil, nil, nil, nil); err != nil {
+			walletOrderType := "food"
+			if order.IsGrocery() {
+				walletOrderType = "grocery"
+			}
+			if _, err = postWalletTransaction(ctx, tx, riderID, models.WalletTxnDeliveryEarning, payout,
+				&orderID, nil, nil, nil, nil, walletOrderType); err != nil {
 				return false, err
 			}
 			if isCODPaymentMode(order.PaymentMode) && order.Amount > 0 {
 				note := "COD cash collected on delivery"
-				if _, err = PostWalletTransaction(ctx, tx, riderID, models.WalletTxnCashCollected, -order.Amount,
-					&orderID, nil, nil, &note, nil); err != nil {
+				if _, err = postWalletTransaction(ctx, tx, riderID, models.WalletTxnCashCollected, -order.Amount,
+					&orderID, nil, nil, &note, nil, walletOrderType); err != nil {
 					return false, err
 				}
 			}
@@ -106,21 +110,36 @@ const legacyFlatRiderPayout = 30.00
 
 // riderPayoutFor returns the rider's payout for a completed delivery: the
 // order's pricing-snapshot rider cost when a snapshot exists, else the legacy
-// flat amount. Grocery orders and databases without the snapshot table (older
-// environments) use the legacy amount.
+// flat amount. Grocery and food read separate snapshots, so overlapping order
+// IDs cannot substitute another business's payout.
 func (r *DeliveryRepository) riderPayoutFor(ctx context.Context, tx *sql.Tx, order *models.DeliveryOrder) (float64, error) {
+	return riderPayoutFromSnapshot(ctx, tx, order)
+}
+
+// QuotedRiderPayout uses the same immutable source as completion, including a
+// configured zero payout. Customer delivery charges are never rider earnings.
+func (r *DeliveryRepository) QuotedRiderPayout(ctx context.Context, order *models.DeliveryOrder) (float64, error) {
+	return riderPayoutFromSnapshot(ctx, r.db, order)
+}
+
+func riderPayoutFromSnapshot(ctx context.Context, q interface {
+	QueryRowContext(context.Context, string, ...any) *sql.Row
+}, order *models.DeliveryOrder) (float64, error) {
+	table := "order_pricing_snapshots"
+	query := `SELECT rider_cost_cents FROM order_pricing_snapshots WHERE order_id=$1`
 	if order.IsGrocery() {
-		return legacyFlatRiderPayout, nil
+		table = "grocery_pricing_snapshots"
+		query = `SELECT rider_cost_cents FROM grocery_pricing_snapshots WHERE grocery_order_id=$1`
 	}
 	var hasTable bool
-	if err := tx.QueryRowContext(ctx, `SELECT to_regclass('order_pricing_snapshots') IS NOT NULL`).Scan(&hasTable); err != nil {
+	if err := q.QueryRowContext(ctx, `SELECT to_regclass($1) IS NOT NULL`, table).Scan(&hasTable); err != nil {
 		return 0, err
 	}
 	if !hasTable {
 		return legacyFlatRiderPayout, nil
 	}
 	var cents sql.NullInt64
-	err := tx.QueryRowContext(ctx, `SELECT rider_cost_cents FROM order_pricing_snapshots WHERE order_id=$1`, order.OrderID).Scan(&cents)
+	err := q.QueryRowContext(ctx, query, order.OrderID).Scan(&cents)
 	if errors.Is(err, sql.ErrNoRows) || (err == nil && !cents.Valid) {
 		return legacyFlatRiderPayout, nil
 	}

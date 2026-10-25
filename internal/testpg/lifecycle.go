@@ -59,7 +59,7 @@ func ApplyLifecycle(db *sql.DB) error {
 	// source file so the result does not depend on the calling package's cwd.
 	_, self, _, _ := runtime.Caller(0)
 	migrations := filepath.Join(filepath.Dir(self), "..", "..", "migrations")
-	for _, name := range []string{"010_rider_wallet_and_settlements", "011_rider_wallet_transaction_idempotency"} {
+	for _, name := range []string{"010_rider_wallet_and_settlements", "011_rider_wallet_transaction_idempotency", "012_wallet_order_namespace"} {
 		body, err := os.ReadFile(filepath.Join(migrations, name+".up.sql"))
 		if err != nil {
 			return err

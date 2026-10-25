@@ -66,8 +66,12 @@ func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*mod
 			debug.Logf("active order lookup source=delivery_orders rider_id=%s order_id=%d status=%s", riderID, deliveryOrder.OrderID, deliveryOrder.DeliveryStatus)
 			active := activeOrderFromDeliveryOrder(deliveryOrder)
 			var snapshot *repository.OrderRiderSnapshot
-			if snap, snapErr := s.deliveryRepo.GetOrderRiderSnapshot(ctx, deliveryOrder.OrderID); snapErr == nil {
-				if !deliveryOrder.IsGrocery() && !snap.HasRider(riderID) {
+			if !deliveryOrder.IsGrocery() {
+				snap, snapErr := s.deliveryRepo.GetOrderRiderSnapshot(ctx, deliveryOrder.OrderID)
+				if snapErr != nil {
+					return nil, snapErr
+				}
+				if !snap.HasRider(riderID) {
 					return nil, sql.ErrNoRows
 				}
 				if restaurantOrderClosed(snap.OrderStatus) {
@@ -80,8 +84,6 @@ func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*mod
 				active.RestaurantOrderStatus = snap.OrderStatus
 				ready := restaurantReadyForPickup(snap.OrderStatus)
 				active.PickupReady = &ready
-			} else if !deliveryOrder.IsGrocery() {
-				return nil, snapErr
 			}
 			fields := activeDeliveryFields(deliveryOrder, snapshot)
 			fields["rider_id"] = riderID
@@ -132,6 +134,7 @@ func activeOrderFromDeliveryOrder(order *models.DeliveryOrder) *models.ActiveOrd
 	}
 
 	return &models.ActiveOrder{
+		OrderType:       models.NormalizeSourceOrderType(order.OrderType),
 		ID:              strconv.Itoa(order.OrderID),
 		OrderID:         order.OrderID,
 		DeliveryOrderID: order.DeliveryOrderID,
@@ -170,6 +173,7 @@ func activeOrderFromSharedOrder(order *models.Order) *models.ActiveOrder {
 	}
 
 	return &models.ActiveOrder{
+		OrderType:         "food",
 		ID:                strconv.Itoa(order.OrderID),
 		OrderID:           order.OrderID,
 		RestaurantID:      order.RestaurantID,

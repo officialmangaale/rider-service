@@ -10,22 +10,23 @@ import (
 // DeliveryOrder represents a rider-service-owned delivery order
 // created from ORDER_PLACED SQS events.
 type DeliveryOrder struct {
-	DeliveryOrderID int     `json:"delivery_order_id"`
-	OrderID         int     `json:"order_id"`
-	RestaurantID    int     `json:"restaurant_id"`
-	CustomerID      int     `json:"customer_id"`
-	PickupLatitude  float64 `json:"pickup_latitude"`
-	PickupLongitude float64 `json:"pickup_longitude"`
-	PickupAddress   string  `json:"pickup_address"`
-	DropLatitude    float64 `json:"drop_latitude"`
-	DropLongitude   float64 `json:"drop_longitude"`
-	DropAddress     string  `json:"drop_address"`
-	Amount          float64 `json:"amount"`
-	PaymentMode     string  `json:"payment_mode"`
-	DeliveryStatus  string  `json:"delivery_status"`
-	AssignedRiderID *string `json:"assigned_rider_id"`
-	RiderUserID     *string `json:"rider_user_id"`
-	AssignmentType  string  `json:"assignment_type"`
+	DeliveryOrderID int      `json:"delivery_order_id"`
+	OrderID         int      `json:"order_id"`
+	RestaurantID    int      `json:"restaurant_id"`
+	CustomerID      int      `json:"customer_id"`
+	PickupLatitude  float64  `json:"pickup_latitude"`
+	PickupLongitude float64  `json:"pickup_longitude"`
+	PickupAddress   string   `json:"pickup_address"`
+	DropLatitude    float64  `json:"drop_latitude"`
+	DropLongitude   float64  `json:"drop_longitude"`
+	DropAddress     string   `json:"drop_address"`
+	Amount          float64  `json:"amount"`
+	RiderPayout     *float64 `json:"rider_payout,omitempty"`
+	PaymentMode     string   `json:"payment_mode"`
+	DeliveryStatus  string   `json:"delivery_status"`
+	AssignedRiderID *string  `json:"assigned_rider_id"`
+	RiderUserID     *string  `json:"rider_user_id"`
+	AssignmentType  string   `json:"assignment_type"`
 	// OrderType is "food" or "grocery". Rows written before grocery dispatch
 	// carry "food", which is what they were.
 	OrderType       string     `json:"order_type"`
