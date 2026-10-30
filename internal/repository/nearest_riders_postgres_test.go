@@ -143,6 +143,23 @@ func TestFindNearestRidersOnPostgresAppliesEveryRule(t *testing.T) {
 	}
 }
 
+func TestRestaurantHiredRidersNeverMatchPlatformOrders(t *testing.T) {
+	db := nearestDB(t)
+	seed(t, db, seedRider{id: "hired", online: true, available: true, ageSeconds: 10}, seedRider{id: "platform", online: true, available: true, ageSeconds: 10})
+	if _, err := db.Exec(`INSERT INTO restaurant_riders(restaurant_id,rider_user_id)VALUES(27,$1)`, riderUUID("hired")); err != nil {
+		t.Fatal(err)
+	}
+	repo := NewDeliveryRepository(db)
+	got := ids(t, repo, 10)
+	if len(got) != 1 || got[0] != "platform" {
+		t.Fatal("hired rider leaked into platform matching", got)
+	}
+	riders, err := repo.FindNearestRidersAmong(context.Background(), pickupLat, pickupLng, 5, 10, []string{riderUUID("hired")})
+	if err != nil || len(riders) != 0 {
+		t.Fatal("Redis candidate bypassed exclusivity", riders, err)
+	}
+}
+
 func TestFindNearestRidersOnPostgresHonoursTheLimitAndDistance(t *testing.T) {
 	db := nearestDB(t)
 	seed(t, db,

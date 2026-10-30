@@ -64,6 +64,11 @@ func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*mod
 		deliveryOrder, err := s.deliveryRepo.GetActiveOrderForRider(ctx, riderID)
 		if err == nil {
 			debug.Logf("active order lookup source=delivery_orders rider_id=%s order_id=%d status=%s", riderID, deliveryOrder.OrderID, deliveryOrder.DeliveryStatus)
+			payout, quoteErr := s.deliveryRepo.QuotedRiderPayout(ctx, deliveryOrder)
+			if quoteErr != nil {
+				return nil, quoteErr
+			}
+			deliveryOrder.RiderPayout = &payout
 			active := activeOrderFromDeliveryOrder(deliveryOrder)
 			var snapshot *repository.OrderRiderSnapshot
 			if !deliveryOrder.IsGrocery() {
@@ -106,6 +111,13 @@ func (s *OrderService) GetActiveOrder(ctx context.Context, riderID string) (*mod
 
 // GetIncomingAssignment returns the rider's pending assignment offer.
 func (s *OrderService) GetIncomingAssignment(ctx context.Context, riderID string) (*models.DeliveryAssignment, *models.Order, error) {
+	linked, linkErr := s.riderRepo.GetRestaurantsForRider(ctx, riderID)
+	if linkErr != nil {
+		return nil, nil, linkErr
+	}
+	if len(linked) > 0 {
+		return nil, nil, sql.ErrNoRows
+	}
 	assignment, err := s.assignmentRepo.GetPendingForRider(ctx, riderID)
 	if err != nil {
 		return nil, nil, err
@@ -133,6 +145,10 @@ func activeOrderFromDeliveryOrder(order *models.DeliveryOrder) *models.ActiveOrd
 		assignmentType = "platform"
 	}
 
+	pay := 0.0
+	if order.RiderPayout != nil {
+		pay = *order.RiderPayout
+	}
 	return &models.ActiveOrder{
 		OrderType:       models.NormalizeSourceOrderType(order.OrderType),
 		ID:              strconv.Itoa(order.OrderID),
@@ -159,6 +175,7 @@ func activeOrderFromDeliveryOrder(order *models.DeliveryOrder) *models.ActiveOrd
 		PaymentMethod:      order.PaymentMode,
 		Amount:             order.Amount,
 		AmountToCollect:    order.Amount,
+		BasePayout:         pay,
 		AssignmentType:     assignmentType,
 		RestaurantOwned:    order.RestaurantOwned,
 		AssignedAt:         order.AssignedAt,

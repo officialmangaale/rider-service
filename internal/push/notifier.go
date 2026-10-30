@@ -60,6 +60,7 @@ type Offer struct {
 	// Amount is the order value the offer already carried. It is not the
 	// rider's payout, which is credited on delivery and is not part of an offer.
 	Amount      float64
+	RiderPayout *float64
 	PaymentMode string
 	ExpiresAt   time.Time
 }
@@ -216,6 +217,9 @@ func buildOfferMessage(token DeviceToken, offer Offer, remaining time.Duration) 
 		"payment_mode":         offer.PaymentMode,
 		"expires_at":           offer.ExpiresAt.UTC().Format(time.RFC3339),
 	}
+	if offer.RiderPayout != nil {
+		data["rider_payout"] = strconv.FormatFloat(*offer.RiderPayout, 'f', 2, 64)
+	}
 	msg := Message{
 		Token:       token.Token,
 		Data:        data,
@@ -257,6 +261,9 @@ func buildClosureMessage(token DeviceToken, closure OfferClosure) Message {
 // that identifies the customer.
 func offerSummary(ref string, offer Offer) string {
 	parts := []string{ref}
+	if offer.RiderPayout != nil {
+		parts = append(parts, fmt.Sprintf("Your pay Rs %.2f", *offer.RiderPayout))
+	}
 	if name := strings.TrimSpace(offer.RestaurantName); name != "" {
 		parts = append(parts, name)
 	}

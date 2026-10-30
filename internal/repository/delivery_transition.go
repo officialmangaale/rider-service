@@ -125,6 +125,9 @@ func (r *DeliveryRepository) QuotedRiderPayout(ctx context.Context, order *model
 func riderPayoutFromSnapshot(ctx context.Context, q interface {
 	QueryRowContext(context.Context, string, ...any) *sql.Row
 }, order *models.DeliveryOrder) (float64, error) {
+	if order.RestaurantOwned {
+		return 0, nil
+	}
 	table := "order_pricing_snapshots"
 	query := `SELECT rider_cost_cents FROM order_pricing_snapshots WHERE order_id=$1`
 	if order.IsGrocery() {

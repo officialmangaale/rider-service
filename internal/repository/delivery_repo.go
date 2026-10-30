@@ -515,8 +515,16 @@ func (r *DeliveryRepository) RecordEarning(ctx context.Context, tx *sql.Tx, ride
 // ===== DELIVERY ORDER REQUESTS =====
 
 func (r *DeliveryRepository) CreateRequest(ctx context.Context, deliveryOrderID, orderID int, riderID string, distanceKm float64, expiresAt time.Time) (*models.DeliveryOrderRequest, error) {
+	tx, err := r.db.BeginTx(ctx, nil)
+	if err != nil {
+		return nil, err
+	}
+	defer tx.Rollback()
+	if err = r.LockPlatformRider(ctx, tx, riderID); err != nil {
+		return nil, err
+	}
 	var req models.DeliveryOrderRequest
-	err := r.db.QueryRowContext(ctx,
+	err = tx.QueryRowContext(ctx,
 		`INSERT INTO delivery_order_requests (delivery_order_id, order_id, rider_id, distance_km, expires_at)
 		 SELECT $1,$2,$3,$4,$5 FROM delivery_orders d WHERE d.delivery_order_id=$1
 		   AND d.assigned_rider_id IS NULL AND COALESCE(d.rider_user_id,'')=''
@@ -535,6 +543,9 @@ func (r *DeliveryRepository) CreateRequest(ctx context.Context, deliveryOrderID,
 	if err != nil {
 		return nil, err
 	}
+	if err = tx.Commit(); err != nil {
+		return nil, err
+	}
 	return &req, nil
 }
 
@@ -543,6 +554,7 @@ func (r *DeliveryRepository) GetPendingRequestsForRider(ctx context.Context, rid
 		`SELECT request_id, delivery_order_id, order_id, rider_id, status, distance_km, expires_at, created_at, updated_at
 		 FROM delivery_order_requests
 		 WHERE rider_id=$1 AND status='pending' AND expires_at > NOW()
+		 AND NOT EXISTS(SELECT 1 FROM restaurant_riders rr WHERE rr.rider_user_id=$1 AND rr.is_active AND COALESCE(rr.status,'active')='active')
 		 ORDER BY created_at DESC`, riderID)
 	if err != nil {
 		return nil, err
@@ -807,6 +819,7 @@ func nearestRidersSQL(candidateFilter string) string {
 			WHERE ra.is_online = true
 			  AND ra.is_available = true
 			  AND ra.current_order_id IS NULL
+			  AND NOT EXISTS (SELECT 1 FROM restaurant_riders rr WHERE rr.rider_user_id=rl.rider_id AND rr.is_active AND COALESCE(rr.status,'active')='active')
 			  AND NOT COALESCE(rl.is_deleted,false) AND NOT COALESCE(ra.is_deleted,false)
               AND NOT COALESCE(u.is_deleted,false) AND COALESCE(u.status,'active')='active'
               AND u.primary_role IN ('rider','delivery_driver')

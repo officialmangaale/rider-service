@@ -27,6 +27,10 @@ const CurrentColumns = `
 ALTER TABLE users ADD COLUMN is_deleted boolean DEFAULT false;
 CREATE TABLE restaurants(restaurant_id bigint PRIMARY KEY, name text, metadata jsonb,
 	latitude double precision, longitude double precision, street_address text, user_id uuid);
+CREATE TABLE restaurant_riders(restaurant_rider_id bigserial PRIMARY KEY, restaurant_id bigint NOT NULL,
+ rider_user_id text NOT NULL, rider_name text, rider_phone text, rider_email text,vehicle_type text,vehicle_number text,
+ status text DEFAULT 'active',is_active boolean DEFAULT true,created_by_user_id text,
+ created_at timestamptz DEFAULT now(),updated_at timestamptz DEFAULT now(),UNIQUE(restaurant_id,rider_user_id));
 ALTER TABLE orders ADD COLUMN is_qrunch boolean DEFAULT false,
 	ADD COLUMN metadata jsonb DEFAULT '{"order_source":"customer_web"}',
 	ADD COLUMN creation_source text, ADD COLUMN dining_session_id bigint, ADD COLUMN counter_id bigint,

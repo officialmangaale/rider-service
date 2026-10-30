@@ -123,6 +123,7 @@ func (r *DeliveryRepository) ExpireFoodSearches(ctx context.Context) error {
 }
 
 const offerableFoodPredicate = onlineFoodPredicate + `
+    AND COALESCE(o.metadata->>'order_from','app_web')='app_web'
     AND mangaale_dispatch_enabled(o.restaurant_id)
     AND o.is_deleted = false
     AND lower(o.order_status::text) IN ('preparing', 'ready')

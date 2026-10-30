@@ -517,6 +517,7 @@ func (s *DeliveryService) pushOffer(order *models.DeliveryOrder, req *models.Del
 		DistanceKm:         distanceKm,
 		DeliveryDistanceKm: deliveryDistance,
 		Amount:             order.Amount,
+		RiderPayout:        order.RiderPayout,
 		PaymentMode:        order.PaymentMode,
 		ExpiresAt:          expiresAt,
 	})
@@ -826,7 +827,18 @@ func (s *DeliveryService) ProcessRiderAssignedEvent(ctx context.Context, evt *mo
 
 // GetRiderOrders returns delivery orders assigned to a specific rider by status.
 func (s *DeliveryService) GetRiderOrders(ctx context.Context, riderUserID string, statuses []string) ([]*models.DeliveryOrder, error) {
-	return s.deliveryRepo.GetRiderOrders(ctx, riderUserID, statuses)
+	orders, err := s.deliveryRepo.GetRiderOrders(ctx, riderUserID, statuses)
+	if err != nil {
+		return nil, err
+	}
+	for _, order := range orders {
+		pay, e := s.deliveryRepo.QuotedRiderPayout(ctx, order)
+		if e != nil {
+			return nil, e
+		}
+		order.RiderPayout = &pay
+	}
+	return orders, nil
 }
 
 // GetRiderOrderDetail returns a single delivery order, validating rider ownership.
@@ -846,6 +858,11 @@ func (s *DeliveryService) GetRiderOrderDetail(ctx context.Context, orderID int, 
 	if !owns {
 		return nil, fmt.Errorf("order not assigned to this rider")
 	}
+	pay, err := s.deliveryRepo.QuotedRiderPayout(ctx, do)
+	if err != nil {
+		return nil, err
+	}
+	do.RiderPayout = &pay
 	return do, nil
 }
 
@@ -1057,6 +1074,9 @@ func (s *DeliveryService) acceptRequest(ctx context.Context, requestID int, ride
 		return nil, err
 	}
 	defer tx.Rollback()
+	if err := s.deliveryRepo.LockPlatformRider(ctx, tx, riderID); err != nil {
+		return nil, err
+	}
 	if !initialOrder.IsGrocery() {
 		if err := s.deliveryRepo.LockFoodOrder(ctx, tx, initial.OrderID); err != nil {
 			return nil, err

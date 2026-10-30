@@ -386,6 +386,8 @@ func mapDeliveryOrderToDTO(o *models.DeliveryOrder) dto.RiderDeliveryOrderRespon
 	}
 
 	return dto.RiderDeliveryOrderResponse{
+		OrderType:       models.NormalizeSourceOrderType(o.OrderType),
+		RiderPayout:     o.RiderPayout,
 		OrderID:         o.OrderID,
 		DeliveryOrderID: o.DeliveryOrderID,
 		RestaurantID:    o.RestaurantID,

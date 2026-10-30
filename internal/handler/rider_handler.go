@@ -69,6 +69,10 @@ func (h *RiderHandler) GetProfile(c *gin.Context) {
 
 	// Fetch linked restaurants
 	linked, err := h.riderSvc.GetRestaurantsForRider(c.Request.Context(), userID)
+	if err != nil {
+		dto.InternalError(c, "Restaurant membership unavailable")
+		return
+	}
 	var linkedDTOs []dto.LinkedRestaurantDTO
 	mode := "platform"
 	if err == nil && len(linked) > 0 {

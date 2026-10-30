@@ -43,6 +43,40 @@ func TestOnlineDispatchRepairsLostCompletionProjection(t *testing.T) {
 	}
 }
 
+func TestWhatsAppOrdersNeverStartPlatformSearch(t *testing.T) {
+	db, s := onlineFixture(t)
+	if _, err := db.Exec(`UPDATE orders SET metadata=metadata||'{"order_from":"whatsapp_link"}'::jsonb WHERE order_id=100`); err != nil {
+		t.Fatal(err)
+	}
+	onlineEvent(t, s, 100)
+	var n int
+	if err := db.QueryRow(`SELECT count(*) FROM delivery_order_requests WHERE order_id=100`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("WhatsApp order sent to platform riders", n, err)
+	}
+	if err := s.ReconcileFoodDispatches(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.QueryRow(`SELECT count(*) FROM delivery_order_requests WHERE order_id=100`).Scan(&n); err != nil || n != 0 {
+		t.Fatal("reconciliation dispatched WhatsApp order", n, err)
+	}
+}
+
+func TestHiredRiderCannotAcceptPreviouslyOfferedPlatformOrder(t *testing.T) {
+	db, s := onlineFixture(t)
+	onlineEvent(t, s, 100)
+	id, _ := requestFor(t, db, 100, lcRider)
+	if _, err := db.Exec(`INSERT INTO restaurant_riders(restaurant_id,rider_user_id)VALUES(27,$1)`, lcRider); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AcceptRequest(context.Background(), id, lcRider); err == nil {
+		t.Fatal("hired rider accepted stale platform offer")
+	}
+	requests, err := s.GetPendingRequestPayloads(context.Background(), lcRider)
+	if err != nil || len(requests) != 0 {
+		t.Fatal("hired rider still sees platform offer", requests, err)
+	}
+}
+
 func onlineFixture(t *testing.T) (*sql.DB, *DeliveryService) {
 	t.Helper()
 	db := testpg.Open(t)

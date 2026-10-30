@@ -220,6 +220,8 @@ type LinkedRestaurantDTO struct {
 
 // RiderDeliveryOrderResponse is the Flutter-friendly response for restaurant-owned rider orders.
 type RiderDeliveryOrderResponse struct {
+	OrderType       string               `json:"order_type"`
+	RiderPayout     *float64             `json:"rider_payout,omitempty"`
 	OrderID         int                  `json:"order_id"`
 	DeliveryOrderID int                  `json:"delivery_order_id"`
 	RestaurantID    int                  `json:"restaurant_id"`

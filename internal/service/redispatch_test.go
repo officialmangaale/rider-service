@@ -76,6 +76,12 @@ func expectRedispatchable(mock sqlmock.Sqlmock) {
 
 var nearbyColumns = []string{"rider_id", "latitude", "longitude", "distance_km"}
 
+func expectPlatformOfferLock(mock sqlmock.Sqlmock, rider string) {
+	mock.ExpectBegin()
+	mock.ExpectQuery("SELECT to_regclass").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	mock.ExpectQuery("SELECT EXISTS.*FROM restaurant_riders").WithArgs(rider).WillReturnRows(sqlmock.NewRows([]string{"linked"}).AddRow(false))
+}
+
 func TestRedispatchOffersTheOrderToARiderWhoIsNowEligible(t *testing.T) {
 	svc, mock := newRedispatchService(t)
 	expectRedispatchable(mock)
@@ -90,10 +96,12 @@ func TestRedispatchOffersTheOrderToARiderWhoIsNowEligible(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass($1) IS NOT NULL")).WithArgs("order_pricing_snapshots").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	expectPlatformOfferLock(mock, "rider-ramesh")
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO delivery_order_requests")).
 		WithArgs(16, 13286, "rider-ramesh", 0.0, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"request_id", "delivery_order_id", "order_id", "rider_id", "status", "distance_km", "expires_at", "created_at", "updated_at"}).
 			AddRow(901, 16, 13286, "rider-ramesh", "pending", 0.0, time.Now().Add(30*time.Second), time.Now(), time.Now()))
+	mock.ExpectCommit()
 
 	offered, err := svc.RedispatchOrder(context.Background(), 16)
 	if err != nil {
@@ -144,10 +152,12 @@ func TestRedispatchSkipsARiderWhoDeclined(t *testing.T) {
 		WillReturnResult(sqlmock.NewResult(0, 1))
 	mock.ExpectQuery(regexp.QuoteMeta("SELECT to_regclass($1) IS NOT NULL")).WithArgs("order_pricing_snapshots").
 		WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
+	expectPlatformOfferLock(mock, "rider-next")
 	mock.ExpectQuery(regexp.QuoteMeta("INSERT INTO delivery_order_requests")).
 		WithArgs(16, 13286, "rider-next", 1.5, sqlmock.AnyArg()).
 		WillReturnRows(sqlmock.NewRows([]string{"request_id", "delivery_order_id", "order_id", "rider_id", "status", "distance_km", "expires_at", "created_at", "updated_at"}).
 			AddRow(902, 16, 13286, "rider-next", "pending", 1.5, time.Now().Add(30*time.Second), time.Now(), time.Now()))
+	mock.ExpectCommit()
 
 	offered, err := svc.RedispatchOrder(context.Background(), 16)
 	if err != nil {

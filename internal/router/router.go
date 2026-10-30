@@ -111,6 +111,12 @@ func Setup(
 	// --- Rider Profile & Onboarding ---
 	rider := auth.Group("/rider")
 	{
+		membership := handler.NewRiderMembershipHandler(db)
+		rider.GET("/membership", membership.Profile)
+		rider.GET("/delivery-history", membership.History)
+		rider.PUT("/work-type", membership.WorkType)
+		rider.GET("/restaurant-invitations", membership.Invitations)
+		rider.POST("/restaurant-invitations/:invitationId/answer", membership.Answer)
 		rider.GET("/profile", riderH.GetProfile)
 		rider.PUT("/profile", riderH.UpdateProfile)
 		rider.DELETE("/account", riderH.DeleteAccount)
