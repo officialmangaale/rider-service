@@ -14,7 +14,9 @@ import (
 
 // DeliveryRepository handles all delivery-flow tables.
 type DeliveryRepository struct {
-	db *sql.DB
+	db                         *sql.DB
+	ContractPayEnabled         bool
+	ContractSnapshotsAvailable bool
 }
 
 type RiderEligibilitySummary struct {
@@ -543,6 +545,11 @@ func (r *DeliveryRepository) CreateRequest(ctx context.Context, deliveryOrderID,
 	if err != nil {
 		return nil, err
 	}
+	if r.ContractPayEnabled {
+		if err = r.freezeOfferPay(ctx, tx, &req); err != nil {
+			return nil, err
+		}
+	}
 	if err = tx.Commit(); err != nil {
 		return nil, err
 	}
@@ -555,6 +562,7 @@ func (r *DeliveryRepository) GetPendingRequestsForRider(ctx context.Context, rid
 		 FROM delivery_order_requests
 		 WHERE rider_id=$1 AND status='pending' AND expires_at > NOW()
 		 AND NOT EXISTS(SELECT 1 FROM restaurant_riders rr WHERE rr.rider_user_id=$1 AND rr.is_active AND COALESCE(rr.status,'active')='active')
+		 AND NOT EXISTS(SELECT 1 FROM rider_platform_access pa WHERE pa.rider_id=$1 AND pa.state<>'approved')
 		 ORDER BY created_at DESC`, riderID)
 	if err != nil {
 		return nil, err
@@ -616,6 +624,12 @@ func (r *DeliveryRepository) AcceptRequest(ctx context.Context, tx *sql.Tx, requ
 	affected, _ := result.RowsAffected()
 	if affected == 0 {
 		return fmt.Errorf("request not pending or already responded")
+	}
+	if r.ContractPayEnabled {
+		_, err = tx.ExecContext(ctx, `INSERT INTO rider_assignment_pay(delivery_order_id,rider_id,request_id,amount_cents,incentive_cents,tip_cents,policy) SELECT delivery_order_id,rider_id,request_id,amount_cents,incentive_cents,tip_cents,policy FROM rider_offer_pay WHERE request_id=$1 ON CONFLICT(delivery_order_id,rider_id) DO NOTHING`, requestID)
+		if err != nil {
+			return err
+		}
 	}
 	return nil
 }
@@ -820,6 +834,7 @@ func nearestRidersSQL(candidateFilter string) string {
 			  AND ra.is_available = true
 			  AND ra.current_order_id IS NULL
 			  AND NOT EXISTS (SELECT 1 FROM restaurant_riders rr WHERE rr.rider_user_id=rl.rider_id AND rr.is_active AND COALESCE(rr.status,'active')='active')
+			  AND NOT EXISTS (SELECT 1 FROM rider_platform_access pa WHERE pa.rider_id=rl.rider_id AND pa.state<>'approved')
 			  AND NOT COALESCE(rl.is_deleted,false) AND NOT COALESCE(ra.is_deleted,false)
               AND NOT COALESCE(u.is_deleted,false) AND COALESCE(u.status,'active')='active'
               AND u.primary_role IN ('rider','delivery_driver')

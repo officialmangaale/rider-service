@@ -28,7 +28,8 @@ type Config struct {
 	// RiderReferralEnabled gates the rider-referral qualification callback to
 	// restaurant-service. Defaults to false: with it off, delivery completion
 	// behaves exactly as it did before the referral programme existed.
-	RiderReferralEnabled bool
+	RiderReferralEnabled    bool
+	RiderContractPayEnabled bool
 
 	// Delivery config
 	SearchRadiusKm       float64
@@ -71,7 +72,8 @@ func Load() (*Config, error) {
 		CustomerLiveTrackingEnabled: getEnvBool("CUSTOMER_LIVE_TRACKING_ENABLED", false),
 
 		// Referral programme — off by default.
-		RiderReferralEnabled: getEnvBool("RIDER_REFERRAL_ENABLED", false),
+		RiderReferralEnabled:    getEnvBool("RIDER_REFERRAL_ENABLED", false),
+		RiderContractPayEnabled: getEnvBool("RIDER_CONTRACT_PAY_ENABLED", false),
 
 		// Delivery defaults
 		SearchRadiusKm:       getEnvFloat("SEARCH_RADIUS_KM", 5.0),

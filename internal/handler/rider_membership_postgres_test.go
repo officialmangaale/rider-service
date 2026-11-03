@@ -38,6 +38,16 @@ func membershipDB(t *testing.T) *sql.DB {
 	if _, err = db.Exec(string(ddl)); err != nil {
 		t.Fatalf("membership migration: %v", err)
 	}
+	ddl, err = os.ReadFile("../testpg/testdata/146_rider_platform_reapplication.sql")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(`DROP TABLE rider_platform_access;ALTER TABLE users ADD COLUMN IF NOT EXISTS is_available boolean DEFAULT false`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err = db.Exec(string(ddl)); err != nil {
+		t.Fatal(err)
+	}
 	return db
 }
 func invite(t *testing.T, db *sql.DB, restaurant int) int {

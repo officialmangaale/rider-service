@@ -46,6 +46,8 @@ type DeliveryOrder struct {
 
 // DeliveryOrderRequest represents a pending request sent to a nearby rider.
 type DeliveryOrderRequest struct {
+	RiderPayout     *float64  `json:"rider_payout,omitempty"`
+	EarningMode     string    `json:"earning_mode,omitempty"`
 	RequestID       int       `json:"request_id"`
 	DeliveryOrderID int       `json:"delivery_order_id"`
 	OrderID         int       `json:"order_id"`

@@ -28,5 +28,12 @@ func (r *DeliveryRepository) LockPlatformRider(ctx context.Context, tx *sql.Tx, 
 	if linked {
 		return errors.New("restaurant riders cannot accept platform orders")
 	}
+	var blocked bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS(SELECT 1 FROM rider_platform_access WHERE rider_id=$1 AND state<>'approved')`, rider).Scan(&blocked); err != nil {
+		return err
+	}
+	if blocked {
+		return errors.New("re-apply to platform and wait for admin approval")
+	}
 	return nil
 }

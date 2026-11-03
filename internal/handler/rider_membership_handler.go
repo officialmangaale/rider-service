@@ -28,7 +28,13 @@ func (h *RiderMembershipHandler) Profile(c *gin.Context) {
 		dto.NotFound(c, "Rider not found")
 		return
 	}
-	dto.Success(c, 200, "Rider membership", gin.H{"rider_code": code, "work_type": work})
+	var state string
+	var linked bool
+	if err = h.db.QueryRowContext(c.Request.Context(), `SELECT COALESCE((SELECT state FROM rider_platform_access WHERE rider_id=$1),'approved'),EXISTS(SELECT 1 FROM restaurant_riders WHERE rider_user_id=$1 AND is_active AND COALESCE(status,'active')='active')`, rider).Scan(&state, &linked); err != nil {
+		dto.ErrorResponse(c, 503, "Platform membership unavailable", "")
+		return
+	}
+	dto.Success(c, 200, "Rider membership", gin.H{"rider_code": code, "work_type": work, "platform_status": state, "restaurant_linked": linked, "platform_eligible": state == "approved" && !linked})
 }
 func (h *RiderMembershipHandler) WorkType(c *gin.Context) {
 	var req struct {

@@ -113,12 +113,22 @@ const legacyFlatRiderPayout = 30.00
 // flat amount. Grocery and food read separate snapshots, so overlapping order
 // IDs cannot substitute another business's payout.
 func (r *DeliveryRepository) riderPayoutFor(ctx context.Context, tx *sql.Tx, order *models.DeliveryOrder) (float64, error) {
+	if pay, err := r.assignmentPay(ctx, tx, order); err != nil {
+		return 0, err
+	} else if pay != nil {
+		return *pay, nil
+	}
 	return riderPayoutFromSnapshot(ctx, tx, order)
 }
 
 // QuotedRiderPayout uses the same immutable source as completion, including a
 // configured zero payout. Customer delivery charges are never rider earnings.
 func (r *DeliveryRepository) QuotedRiderPayout(ctx context.Context, order *models.DeliveryOrder) (float64, error) {
+	if pay, err := r.assignmentPay(ctx, r.db, order); err != nil {
+		return 0, err
+	} else if pay != nil {
+		return *pay, nil
+	}
 	return riderPayoutFromSnapshot(ctx, r.db, order)
 }
 

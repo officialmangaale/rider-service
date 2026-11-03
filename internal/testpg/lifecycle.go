@@ -24,6 +24,7 @@ var online097 string
 // Defaults are chosen so a bare `INSERT INTO orders(order_id, restaurant_id,
 // order_status)` is an eligible customer_web delivery order.
 const CurrentColumns = `
+CREATE TABLE rider_platform_access(rider_id text PRIMARY KEY,state text NOT NULL);
 ALTER TABLE users ADD COLUMN is_deleted boolean DEFAULT false;
 CREATE TABLE restaurants(restaurant_id bigint PRIMARY KEY, name text, metadata jsonb,
 	latitude double precision, longitude double precision, street_address text, user_id uuid);

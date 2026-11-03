@@ -128,7 +128,11 @@ func (s *RiderService) GoOnline(ctx context.Context, userID string) error {
 	if err := s.riderRepo.SetAvailability(ctx, userID, true); err != nil {
 		return err
 	}
-	return s.riderRepo.SetRealtimeAvailability(ctx, userID, true, true)
+	if err := s.riderRepo.SetRealtimeAvailability(ctx, userID, true, true); err != nil {
+		_ = s.riderRepo.SetAvailability(ctx, userID, false)
+		return err
+	}
+	return nil
 }
 
 // GoOffline sets the rider as unavailable.

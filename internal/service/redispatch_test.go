@@ -80,6 +80,7 @@ func expectPlatformOfferLock(mock sqlmock.Sqlmock, rider string) {
 	mock.ExpectBegin()
 	mock.ExpectQuery("SELECT to_regclass").WillReturnRows(sqlmock.NewRows([]string{"exists"}).AddRow(false))
 	mock.ExpectQuery("SELECT EXISTS.*FROM restaurant_riders").WithArgs(rider).WillReturnRows(sqlmock.NewRows([]string{"linked"}).AddRow(false))
+	mock.ExpectQuery("SELECT EXISTS.*FROM rider_platform_access").WithArgs(rider).WillReturnRows(sqlmock.NewRows([]string{"blocked"}).AddRow(false))
 }
 
 func TestRedispatchOffersTheOrderToARiderWhoIsNowEligible(t *testing.T) {

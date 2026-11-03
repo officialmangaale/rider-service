@@ -47,7 +47,7 @@ func (h *RiderMembershipHandler) History(c *gin.Context) {
  'order_status',h.status,'delivery_status',h.status,'payment_method',h.payment_mode,
  'restaurant_owned',h.own,'delivered_at',h.ended_at,'created_at',h.created_at,'distance_km',h.distance_km,'duration_minutes',h.duration_minutes,
  'earnings',CASE WHEN h.own THEN 0 ELSE COALESCE(
- (SELECT sum(w.amount) FROM rider_wallet_transactions w WHERE w.rider_id::text=$1 AND w.order_id=h.order_id AND w.order_type=h.order_type AND w.transaction_type='delivery_earning'),
+ (SELECT sum(w.amount) FROM rider_wallet_transactions w WHERE w.rider_id::text=$1 AND w.order_id=h.order_id AND w.order_type=h.order_type AND w.transaction_type IN ('delivery_earning','incentive')),
  (SELECT sum(e.amount) FROM rider_earnings e WHERE e.rider_id::text=$1 AND e.order_id=h.order_id AND e.order_type=h.order_type AND NOT COALESCE(e.is_deleted,false)),0) END,
  'notes',CASE WHEN h.own THEN 'Paid directly by restaurant' ELSE 'Recorded platform delivery earnings' END
  ) FROM history h ORDER BY h.ended_at DESC,h.order_type,h.order_id DESC LIMIT $2 OFFSET $3`, rider, page.Limit, page.Offset())

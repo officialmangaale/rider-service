@@ -454,6 +454,11 @@ func (s *DeliveryService) sendOffers(ctx context.Context, deliveryOrder *models.
 			})
 			continue
 		}
+		req.RiderPayout, err = s.deliveryRepo.RequestPay(ctx, req)
+		if err != nil {
+			log.Printf("[DELIVERY] per-rider payout unavailable request_id=%d", req.RequestID)
+			continue
+		}
 		offered++
 		log.Printf("[DELIVERY] Request %d sent to rider %s (%.2f km)", req.RequestID, rider.RiderID, rider.DistanceKm)
 		dispatchtrace.Emit(dispatchtrace.EventOfferPersisted, dispatchtrace.Fields{
@@ -507,6 +512,10 @@ func (s *DeliveryService) pushOffer(order *models.DeliveryOrder, req *models.Del
 		return
 	}
 	deliveryDistance := approximateDeliveryDistance(order)
+	payout := order.RiderPayout
+	if req.RiderPayout != nil {
+		payout = req.RiderPayout
+	}
 	s.offerPusher.OfferCreated(riderID, push.Offer{
 		RequestID:          req.RequestID,
 		OrderID:            order.OrderID,
@@ -517,7 +526,7 @@ func (s *DeliveryService) pushOffer(order *models.DeliveryOrder, req *models.Del
 		DistanceKm:         distanceKm,
 		DeliveryDistanceKm: deliveryDistance,
 		Amount:             order.Amount,
-		RiderPayout:        order.RiderPayout,
+		RiderPayout:        payout,
 		PaymentMode:        order.PaymentMode,
 		ExpiresAt:          expiresAt,
 	})
@@ -721,6 +730,10 @@ func (s *DeliveryService) traceEligibility(ctx context.Context, trigger string, 
 }
 
 func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *models.DeliveryOrder, distanceKm float64, expiresAt time.Time) map[string]interface{} {
+	payout := order.RiderPayout
+	if req.RiderPayout != nil {
+		payout = req.RiderPayout
+	}
 	return map[string]interface{}{
 		"request_id":           req.RequestID,
 		"order_id":             order.OrderID,
@@ -734,7 +747,8 @@ func BuildDeliveryOrderRequestPayload(req *models.DeliveryOrderRequest, order *m
 		"delivery_distance_km": approximateDeliveryDistance(order),
 		"distance_km":          distanceKm,
 		"amount":               order.Amount,
-		"rider_payout":         order.RiderPayout,
+		"rider_payout":         payout,
+		"earning_mode":         req.EarningMode,
 		"payment_mode":         order.PaymentMode,
 		"expires_at":           expiresAt.Format(time.RFC3339),
 		"assignment_type":      order.AssignmentType,
@@ -1014,6 +1028,10 @@ func (s *DeliveryService) GetPendingRequestPayloads(ctx context.Context, riderID
 			return nil, err
 		}
 		order.RiderPayout = &payout
+		req.RiderPayout, err = s.deliveryRepo.RequestPay(ctx, req)
+		if err != nil {
+			return nil, err
+		}
 		payloads = append(payloads, BuildDeliveryOrderRequestPayload(req, order, req.DistanceKm, req.ExpiresAt))
 	}
 	return payloads, nil

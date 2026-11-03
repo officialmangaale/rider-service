@@ -1,6 +1,7 @@
 package router
 
 import (
+	"context"
 	"database/sql"
 
 	"github.com/gin-gonic/gin"
@@ -36,6 +37,9 @@ func Setup(
 	locationHistoryRepo := repository.NewLocationHistoryRepository(db)
 	statusHistoryRepo := repository.NewStatusHistoryRepository(db)
 	deliveryRepo := repository.NewDeliveryRepository(db)
+	if err := deliveryRepo.ConfigureContractPay(context.Background(), cfg.RiderContractPayEnabled); err != nil {
+		panic(err)
+	}
 
 	// -- Services --
 	riderSvc := service.NewRiderService(riderRepo, orderRepo, earningsRepo)
@@ -80,6 +84,7 @@ func Setup(
 	}
 	chatH := handler.NewChatHandler(service.NewChatService(repository.NewChatRepository(db), hub, chatPusher))
 	adminRiderH := handler.NewAdminRiderHandler(db)
+	adminRiderH.ContractPayEnabled = cfg.RiderContractPayEnabled
 	supportH := handler.NewSupportHandler(db)
 
 	// ==================== PUBLIC ROUTES ====================
@@ -113,6 +118,7 @@ func Setup(
 	{
 		membership := handler.NewRiderMembershipHandler(db)
 		rider.GET("/membership", membership.Profile)
+		rider.POST("/platform-reapplication", membership.Reapply)
 		rider.GET("/delivery-history", membership.History)
 		rider.PUT("/work-type", membership.WorkType)
 		rider.GET("/restaurant-invitations", membership.Invitations)
@@ -204,6 +210,13 @@ func Setup(
 	adminRiders.Use(middleware.RequireAdmin())
 	{
 		adminRiders.GET("", adminRiderH.ListRiders)
+		adminRiders.GET("/platform-applications", adminRiderH.PlatformApplications)
+		adminRiders.GET("/cancellation-pay-reviews", adminRiderH.CancellationPayReviews)
+		adminRiders.POST("/cancellation-pay-reviews/:reviewId", adminRiderH.ReviewCancellationPay)
+		adminRiders.GET("/:riderId/earning-contract", adminRiderH.GetEarningContract)
+		adminRiders.PUT("/:riderId/earning-contract", adminRiderH.SaveEarningContract)
+		adminRiders.POST("/:riderId/salary-accruals", adminRiderH.AccrueSalary)
+		adminRiders.POST("/:riderId/platform-application/review", adminRiderH.ReviewPlatformApplication)
 		adminRiders.GET("/:riderId/wallet/transactions", adminRiderH.GetWalletTransactions)
 		adminRiders.GET("/:riderId/settlements", adminRiderH.GetSettlements)
 		adminRiders.POST("/:riderId/settlements", adminRiderH.CreateSettlement)

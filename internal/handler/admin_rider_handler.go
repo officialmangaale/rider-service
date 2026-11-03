@@ -17,7 +17,8 @@ import (
 
 // AdminRiderHandler serves the Module 10/11 admin rider-management endpoints.
 type AdminRiderHandler struct {
-	db *sql.DB
+	db                 *sql.DB
+	ContractPayEnabled bool
 }
 
 // NewAdminRiderHandler creates a new AdminRiderHandler.
