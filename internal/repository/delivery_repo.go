@@ -103,7 +103,7 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 	var o models.DeliveryOrder
 	err := r.db.QueryRowContext(ctx,
 		`INSERT INTO delivery_orders (
-			order_id, restaurant_id, customer_id,
+			order_id, order_type, restaurant_id, customer_id,
 			pickup_latitude, pickup_longitude, pickup_address,
 			drop_latitude, drop_longitude, drop_address,
 			amount, payment_mode,
@@ -113,6 +113,7 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 		 )
 		 SELECT
 			o.order_id,
+			'food',
 			COALESCE(o.restaurant_id, $2),
 			COALESCE(o.customer_id, 0),
 			COALESCE(rest.latitude, 0),
@@ -123,19 +124,22 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 			COALESCE(o.delivery_address, ''),
 			COALESCE(o.total_amount, 0),
 			COALESCE(o.pay_by::text, 'cash'),
-			$3,
+			$3::text,
 			'restaurant_owned',
 			true,
 			COALESCE(NULLIF($4, ''), rest.name, 'Restaurant'),
 			COALESCE(NULLIF($5, ''), owner_user.business_phone, owner_user.phone, ''),
 			'rider_assigned',
 			$6,
-			$3
+			$3::text
 		 FROM orders o
 		 LEFT JOIN restaurants rest ON rest.restaurant_id = o.restaurant_id
 		 LEFT JOIN users owner_user ON owner_user.id = rest.user_id
 		 WHERE o.order_id = $1
-		 ON CONFLICT (order_id) DO UPDATE SET
+		   AND o.assigned_rider_user_id = $3::text
+		   AND NOT COALESCE(o.is_deleted, false)
+		   AND o.order_status NOT IN ('cancelled','rejected','declined','completed','delivered')
+		 ON CONFLICT (order_type, order_id) DO UPDATE SET
 			rider_user_id = EXCLUDED.rider_user_id,
 			assignment_type = 'restaurant_owned',
 			restaurant_owned = true,
@@ -149,7 +153,9 @@ func (r *DeliveryRepository) UpsertRestaurantOwnedOrder(ctx context.Context, evt
 			drop_address = COALESCE(NULLIF(delivery_orders.drop_address, ''), EXCLUDED.drop_address),
 			amount = CASE WHEN delivery_orders.amount = 0 THEN EXCLUDED.amount ELSE delivery_orders.amount END,
 			payment_mode = COALESCE(NULLIF(delivery_orders.payment_mode, ''), EXCLUDED.payment_mode),
-			delivery_status = 'rider_assigned',
+			delivery_status = CASE WHEN delivery_orders.rider_user_id=EXCLUDED.rider_user_id
+			    AND delivery_orders.delivery_status IN ('rider_arrived_restaurant','picked_up','on_the_way','delivered')
+			    THEN delivery_orders.delivery_status ELSE 'rider_assigned' END,
 			assigned_at = EXCLUDED.assigned_at,
 			assigned_rider_id = EXCLUDED.rider_user_id,
 			updated_at = NOW()

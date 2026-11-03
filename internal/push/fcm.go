@@ -98,9 +98,9 @@ func ParseServiceAccount(value string) (*ServiceAccount, error) {
 	return &account, nil
 }
 
-// Alert is the visible text of an iOS notification. Android delivery is
-// data-only, so the app builds its own notification (with Accept and Decline
-// actions), which FCM cannot do on its behalf.
+// Alert is visible notification text. Offers stay data-only on Android so the
+// app can build Accept/Decline actions. Assigned-order notices opt in to a
+// native Android notification with Message.AndroidAlert.
 type Alert struct {
 	Title string
 	Body  string
@@ -126,6 +126,9 @@ type Message struct {
 	// Alert makes the iOS delivery a visible alert. Nil sends a silent
 	// (content-available) message instead.
 	Alert *Alert
+	// Assigned orders need an OS notification on Android too. Offers keep
+	// data-only delivery so their custom Accept/Decline actions are preserved.
+	AndroidAlert bool
 
 	// APNSCategory names the iOS notification category that carries the
 	// action buttons, when the app registers one.
@@ -327,6 +330,9 @@ func buildFCMMessage(msg Message, now time.Time) map[string]any {
 	}
 	if msg.CollapseKey != "" {
 		android["collapse_key"] = msg.CollapseKey
+	}
+	if msg.AndroidAlert && msg.Alert != nil {
+		android["notification"] = map[string]any{"title": msg.Alert.Title, "body": msg.Alert.Body, "default_sound": true}
 	}
 
 	headers := map[string]string{

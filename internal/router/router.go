@@ -103,6 +103,7 @@ func Setup(
 	internal.Use(middleware.RequireInternalServiceToken(cfg.InternalServiceToken))
 	{
 		internal.GET("/tracking/orders/:orderId", deliveryH.GetInternalCustomerTracking)
+		internal.POST("/restaurant-orders/assigned", deliveryH.InternalRestaurantAssignment)
 		internal.GET("/maps/usage", deliveryH.GetMapsUsage)
 	}
 

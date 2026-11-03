@@ -800,11 +800,20 @@ func (s *DeliveryService) ProcessRiderAssignedEvent(ctx context.Context, evt *mo
 
 	// Upsert into delivery_orders
 	deliveryOrder, err := s.deliveryRepo.UpsertRestaurantOwnedOrder(ctx, evt)
+	if errors.Is(err, sql.ErrNoRows) {
+		// Ownership/lifecycle changed after the initial event check.
+		return nil
+	}
 	if err != nil {
 		return fmt.Errorf("failed to upsert restaurant-owned delivery order: %w", err)
 	}
 	log.Printf("[DELIVERY] Restaurant-owned order upserted: delivery_order_id=%d order_id=%d rider=%s",
 		deliveryOrder.DeliveryOrderID, deliveryOrder.OrderID, evt.RiderUserID)
+	if pusher, ok := s.offerPusher.(interface {
+		RestaurantOrderAssigned(string, push.AssignmentNotice)
+	}); ok {
+		pusher.RestaurantOrderAssigned(evt.RiderUserID, push.AssignmentNotice{OrderID: evt.OrderID, RestaurantName: evt.RestaurantName})
+	}
 
 	// Mark event processed
 	_ = s.deliveryRepo.MarkEventProcessed(ctx, eventID, evt.OrderID, "RIDER_ASSIGNED_TO_ORDER", models.SourceOrderTypeFood)
